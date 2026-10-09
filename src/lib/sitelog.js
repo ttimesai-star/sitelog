@@ -8,8 +8,9 @@
 // writable attribute ("author", "role", ...) is ever used to decide who wrote a record.
 
 import { addr, i32, key, str, u64 } from "@arkiv-network/sdk/attr"
-import { and, eq, gte, lte, or } from "@arkiv-network/sdk/query"
+import { and, eq, gte, lte, not, or } from "@arkiv-network/sdk/query"
 import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk/utils"
+import { parseAbiItem } from "viem"
 
 export const APP = "sitelog"
 export const SCHEMA_VERSION = 1
@@ -23,6 +24,9 @@ export const RPC_HTTP = "https://rpc.tiramisu.db-chain.testnet.arkiv.network"
 export const RPC_WS = "wss://rpc.tiramisu.db-chain.testnet.arkiv.network"
 export const EXPLORER = "https://tiramisu.explorer.arkiv.network"
 export const BLOCK_TIME_S = 2
+// The address that emits Arkiv entity events (SDK 0.8.1 does not export its ARKIV_ADDRESS constant).
+export const ARKIV_OPERATIONS = "0x4400000000000000000000000000000000000044"
+const ENTITY_CREATED = parseAbiItem("event EntityCreated(bytes32 indexed entityKey, address indexed owner, uint64 expiresAt, uint8 creationFlags)")
 
 // Entity Expiration per type, in days. Each value follows the product rule written next to it.
 export const LIFETIME_DAYS = {
@@ -133,9 +137,13 @@ export function payloadJson(entity) {
   }
 }
 
-async function fetchAll(builder, max = 2000) {
+// Cursor pagination. A cursor is bound to the block its first page was served at, but
+// QueryResult.next() in SDK 0.8.1 does not pin that block, so on a live chain (2 s blocks) the
+// second or third page fails with -32005 "cursor belongs to a different query, block or select".
+// Pinning the whole walk to one block with atBlock() fixes it (arkiv/friction.md, F4).
+async function fetchAll(builder, atBlock, max = 2000) {
   const out = []
-  let page = await builder.fetch()
+  let page = await builder.atBlock(atBlock).fetch()
   for (;;) {
     out.push(...page.entities)
     if (out.length >= max || !page.hasNextPage()) break
@@ -145,9 +153,11 @@ async function fetchAll(builder, max = 2000) {
 }
 
 // The roster counts only if the trust root created it. Latest one wins (client sorts: no server ordering).
-export async function loadRoles(client, { project, trustRoot }) {
+export async function loadRoles(client, { project, trustRoot, atBlock }) {
+  atBlock ??= await client.getBlockNumber()
   const ents = await fetchAll(
     client.select(FULL).where(eq("app", APP), eq("kind", "roles"), eq("project", project)).createdBy(trustRoot).limit(50),
+    atBlock,
   )
   ents.sort((a, b) => Number(attrValue(b, "created_ts")) - Number(attrValue(a, "created_ts")))
   const latest = ents[0]
@@ -169,46 +179,109 @@ export function creatorRole(roles, creator) {
   return "unknown"
 }
 
-// Verified remarks: the $creator filter runs on the node, not in our code.
-export function verifiedRemarksQuery(client, { project, inspectors, minSeverity = 1, maxSeverity = 5, sinceTs, untilTs }) {
+function remarkPreds({ project, minSeverity = 1, maxSeverity = 5, sinceTs, untilTs }) {
   const preds = [eq("app", APP), eq("kind", "remark"), eq("project", project), gte("severity", i32(minSeverity)), lte("severity", i32(maxSeverity))]
   if (sinceTs) preds.push(gte("created_ts", u64(sinceTs)))
   if (untilTs) preds.push(lte("created_ts", u64(untilTs)))
+  return preds
+}
+
+// Verified remarks: the $creator filter runs on the node, not in our code.
+export function verifiedRemarksQuery(client, { inspectors, pageSize = 100, ...f }) {
+  const preds = remarkPreds(f)
   preds.push(or(inspectors.map((a) => eq("$creator", addr(a)))))
-  return client.select(FULL).where(and(preds)).limit(100)
+  return client.select(FULL).where(and(preds)).limit(pageSize)
 }
 
-// Everything that claims to be a remark for this project, whoever wrote it. Used to show forgeries.
-export function anyRemarksQuery(client, { project }) {
-  return client.select(FULL).where(eq("app", APP), eq("kind", "remark"), eq("project", project)).limit(100)
+// Records that claim to be remarks for this project but were not created by any inspector.
+// The node does the exclusion with NOT ($creator = ...); nothing is filtered in our code.
+export function unverifiedRemarksQuery(client, { project, inspectors, pageSize = 100 }) {
+  const preds = [eq("app", APP), eq("kind", "remark"), eq("project", project), ...inspectors.map((a) => not(eq("$creator", addr(a))))]
+  return client.select(FULL).where(and(preds)).limit(pageSize)
 }
 
-export async function loadJournal(client, { project, trustRoot, minSeverity = 1, maxSeverity = 5, sinceTs, untilTs }) {
-  const roles = await loadRoles(client, { project, trustRoot })
-  if (!roles) return { roles: null, remarks: [], forged: [], fixes: [], closures: [] }
-  const verified = roles.inspectors.length
-    ? await fetchAll(verifiedRemarksQuery(client, { project, inspectors: roles.inspectors, minSeverity, maxSeverity, sinceTs, untilTs }))
-    : []
-  const all = await fetchAll(anyRemarksQuery(client, { project }))
-  const vset = new Set(verified.map((e) => e.key))
-  const forged = all.filter((e) => !vset.has(e.key) && creatorRole(roles, e.creator) !== "inspector")
-  const linked = await fetchAll(
-    client.select(FULL).where(eq("app", APP), eq("project", project), or(eq("kind", "fix"), eq("kind", "closure"))).limit(200),
-  )
+const LINK_CHUNK = 25
+
+// Fix claims and closures that point at the given remark keys: one compound query per page.
+function linkedQuery(client, { project, remarkKeys }) {
+  return client
+    .select(FULL)
+    .where(and([eq("app", APP), eq("project", project), or(eq("kind", "fix"), eq("kind", "closure")), or(remarkKeys.map((k) => eq("remark", key(k))))]))
+    .limit(200)
+}
+
+function withStatus(remarkEntities, linked, roles) {
   const fixes = linked.filter((e) => attrValue(e, "kind") === "fix")
   // A closure counts only when an inspector created it; a contractor "closing" its own defect is ignored.
   const closures = linked.filter((e) => attrValue(e, "kind") === "closure")
-  const remarks = verified
-    .map((e) => {
-      const k = e.key.toLowerCase()
-      const myFixes = fixes.filter((f) => String(attrValue(f, "remark")).toLowerCase() === k)
-      const myClosures = closures.filter((c) => String(attrValue(c, "remark")).toLowerCase() === k)
-      const validClosure = myClosures.find((c) => creatorRole(roles, c.creator) === "inspector")
-      const fakeClosures = myClosures.filter((c) => creatorRole(roles, c.creator) !== "inspector")
-      return { entity: e, fixes: myFixes, closure: validClosure, fakeClosures, status: validClosure ? "closed" : myFixes.length ? "fix-claimed" : "open" }
-    })
-    .sort((a, b) => Number(attrValue(b.entity, "created_ts")) - Number(attrValue(a.entity, "created_ts")))
-  return { roles, remarks, forged, fixes, closures }
+  return remarkEntities.map((e) => {
+    const k = e.key.toLowerCase()
+    const myFixes = fixes.filter((f) => String(attrValue(f, "remark")).toLowerCase() === k)
+    const myClosures = closures.filter((c) => String(attrValue(c, "remark")).toLowerCase() === k)
+    const validClosure = myClosures.find((c) => creatorRole(roles, c.creator) === "inspector")
+    const fakeClosures = myClosures.filter((c) => creatorRole(roles, c.creator) !== "inspector")
+    return { entity: e, fixes: myFixes, closure: validClosure, fakeClosures, status: validClosure ? "closed" : myFixes.length ? "fix-claimed" : "open" }
+  })
+}
+
+export function newestFirst(a, b) {
+  const ea = a.entity || a
+  const eb = b.entity || b
+  return Number(attrValue(eb, "created_ts")) - Number(attrValue(ea, "created_ts")) || Number(eb.createdAt ?? 0n) - Number(ea.createdAt ?? 0n)
+}
+
+async function statusesFor(client, { project, roles, entities, atBlock }) {
+  if (!entities.length) return []
+  // The node rejects very long queries (F6 in friction.md), so keys go in chunks of LINK_CHUNK.
+  const keys = entities.map((e) => e.key)
+  const linked = []
+  for (let i = 0; i < keys.length; i += LINK_CHUNK) {
+    linked.push(...(await fetchAll(linkedQuery(client, { project, remarkKeys: keys.slice(i, i + LINK_CHUNK) }), atBlock)))
+  }
+  return withStatus(entities, linked, roles)
+}
+
+// The whole journal in one go (CLI). Every query is pinned to the same block, so the result is a
+// consistent snapshot even while new entities land.
+export async function loadJournal(client, { project, trustRoot, minSeverity = 1, maxSeverity = 5, sinceTs, untilTs }) {
+  const atBlock = await client.getBlockNumber()
+  const roles = await loadRoles(client, { project, trustRoot, atBlock })
+  if (!roles || !roles.inspectors.length) return { roles, remarks: [], forged: [], atBlock }
+  const f = { project, inspectors: roles.inspectors, minSeverity, maxSeverity, sinceTs, untilTs }
+  const verified = await fetchAll(verifiedRemarksQuery(client, f), atBlock)
+  const forged = await fetchAll(unverifiedRemarksQuery(client, f), atBlock)
+  const remarks = (await statusesFor(client, { project, roles, entities: verified, atBlock })).sort(newestFirst)
+  return { roles, remarks, forged, atBlock }
+}
+
+// One page of the journal (web app). `cursor` comes from the previous page; the walk stays on
+// `atBlock`, the block of its first page, so "Load more" keeps working while the chain moves.
+// Arkiv has no server-side ordering, so a page is sorted on its own; order across pages is the node's.
+export async function loadJournalPage(client, { roles, project, minSeverity, maxSeverity, sinceTs, untilTs, pageSize = 25, cursor, atBlock }) {
+  atBlock ??= await client.getBlockNumber()
+  let b = verifiedRemarksQuery(client, { project, inspectors: roles.inspectors, minSeverity, maxSeverity, sinceTs, untilTs, pageSize }).atBlock(atBlock)
+  if (cursor) b = b.cursor(cursor)
+  const page = await b.fetch()
+  const remarks = (await statusesFor(client, { project, roles, entities: page.entities, atBlock })).sort(newestFirst)
+  return { remarks, cursor: page.hasNextPage() ? page.cursor : undefined, atBlock }
+}
+
+export async function loadUnverified(client, { project, roles, atBlock }) {
+  return fetchAll(unverifiedRemarksQuery(client, { project, inspectors: roles.inspectors }), atBlock, 500)
+}
+
+// Creation transaction of each entity, read from the EntityCreated logs of the Arkiv operations
+// address (an entity carries its creation block, not its tx hash). One eth_getLogs per call.
+export async function creationTxs(client, entities) {
+  const out = new Map()
+  const withBlock = entities.filter((e) => e.createdAt !== undefined && e.createdAt !== null)
+  if (!withBlock.length) return out
+  const blocks = withBlock.map((e) => BigInt(e.createdAt))
+  const fromBlock = blocks.reduce((a, b) => (b < a ? b : a))
+  const toBlock = blocks.reduce((a, b) => (b > a ? b : a))
+  const logs = await client.getLogs({ address: ARKIV_OPERATIONS, event: ENTITY_CREATED, args: { entityKey: withBlock.map((e) => e.key) }, fromBlock, toBlock })
+  for (const l of logs) out.set(String(l.args.entityKey).toLowerCase(), l.transactionHash)
+  return out
 }
 
 export async function sha256Hex(bytes) {

@@ -4,17 +4,24 @@ import { toRpcSelect } from "@arkiv-network/sdk/query"
 import { ExpirationTime } from "@arkiv-network/sdk/utils"
 import { custom, http, webSocket } from "viem"
 import {
-  APP, DEMO_CLIENT, DEMO_PROJECT, EXPLORER, RPC_HTTP, RPC_WS, SEVERITY, attrValue, blocksToDate, closeBatch, creatorRole,
-  fixBatch, loadJournal, payloadJson, remarkParams, sha256Hex, verifiedRemarksQuery,
+  APP, DEMO_CLIENT, DEMO_PROJECT, EXPLORER, RPC_HTTP, RPC_WS, SEVERITY, attrValue, blocksToDate, closeBatch, creationTxs, creatorRole,
+  fixBatch, loadJournalPage, loadRoles, loadUnverified, payloadJson, remarkParams, sha256Hex, verifiedRemarksQuery,
 } from "./lib/sitelog.js"
+
+const PAGE = 25
+const CHAIN_ID_HEX = "0x7614d1" // 7738577, Tiramisu
 
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])
 const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "")
 const addrLink = (a) => `<a href="${EXPLORER}/address/${a}" target="_blank" rel="noopener" title="${a}">${short(a)}</a>`
+const entityLink = (k, label) => `<a href="${EXPLORER}/entity/${k}" target="_blank" rel="noopener" title="entity ${k}">${label || "entity " + short(k)}</a>`
+const txLink = (h, label = "tx") => (h ? `<a href="${EXPLORER}/tx/${h}" target="_blank" rel="noopener" title="${h}">${label} ${short(h)}</a>` : "")
 
-const pub = createPublicClient({ chain: tiramisu, transport: http(RPC_HTTP) })
-let state = { journal: null, head: 0n, me: null, wallet: null }
+// Few retries: on HTTP 429 (quota) waiting longer does not help, the quota resets hourly.
+const pub = createPublicClient({ chain: tiramisu, transport: http(RPC_HTTP, { retryCount: 1 }) })
+// Journal state: one cursor walk pinned to one block (see loadJournalPage).
+let state = { roles: null, remarks: [], forged: [], cursor: undefined, atBlock: 0n, pages: 0, txs: new Map(), me: null, wallet: null }
 
 const params = new URLSearchParams(location.search)
 $("project").value = params.get("project") || DEMO_PROJECT
@@ -30,44 +37,59 @@ function filters() {
   return { project: $("project").value.trim(), trustRoot: $("trustRoot").value.trim(), minSeverity: Number($("minSev").value), maxSeverity: Number($("maxSev").value), sinceTs: since }
 }
 
-function badge(status) {
-  return `<span class="badge ${status}">${status}</span>`
+// The public RPC has a per-IP quota (friction F7); say so instead of a bare "HTTP request failed".
+function rpcError(err) {
+  const msg = err?.data?.message || err?.shortMessage || err?.message || String(err)
+  if (/429|rate limit|Too Many/i.test(`${err?.status ?? ""} ${err?.details ?? ""} ${msg}`)) return "the public Tiramisu RPC quota for your network address is used up (HTTP 429). It resets within the hour; the CLI and curl query hit the same quota."
+  return msg
 }
+
+const statusBadge = (s) => `<span class="badge ${s}">${s.replace("-", " ")}</span>`
 
 function renderRoles(roles, f) {
   if (!roles) {
     $("roles").innerHTML = `No roster for <b>${esc(f.project)}</b> created by ${addrLink(f.trustRoot)}. Nothing on this project can be verified.`
     return
   }
-  $("roles").innerHTML = `<b>${esc(roles.title)}</b> · roster entity <code>${short(roles.entity.key)}</code> created by client ${addrLink(roles.entity.creator)}
+  $("roles").innerHTML = `<b>${esc(roles.title)}</b> · roster ${entityLink(roles.entity.key)} ${txLink(state.txs.get(roles.entity.key.toLowerCase()))} created by client ${addrLink(roles.entity.creator)}
     <div class="rolegrid"><div><span class="role inspector">inspectors</span> ${roles.inspectors.map(addrLink).join(", ") || "none"}</div>
     <div><span class="role contractor">contractors</span> ${roles.contractors.map(addrLink).join(", ") || "none"}</div></div>`
 }
 
-function remarkCard(r, roles) {
+function linkLine(e, text, cls = "") {
+  const role = creatorRole(state.roles, e.creator)
+  return `<li class="${cls}">${text} by ${addrLink(e.creator)} <span class="role ${role}">${role}</span> · ${entityLink(e.key, "entity")} ${txLink(state.txs.get(e.key.toLowerCase()))}</li>`
+}
+
+function remarkCard(r) {
   const e = r.entity
   const p = payloadJson(e)
   const sev = attrValue(e, "severity")
   const created = new Date(Number(attrValue(e, "created_ts")) * 1000)
-  const exp = blocksToDate(e.expiresAt, state.head)
-  const fixes = r.fixes
-    .map((f) => `<li>fix claim by ${addrLink(f.creator)} <span class="role ${creatorRole(roles, f.creator)}">${creatorRole(roles, f.creator)}</span>: ${esc(payloadJson(f).text)} <code class="k" title="fix key">${short(f.key)}</code></li>`)
-    .join("")
-  const closure = r.closure ? `<li class="ok">closed by inspector ${addrLink(r.closure.creator)}: ${esc(payloadJson(r.closure).text)}</li>` : ""
-  const fake = r.fakeClosures.map((c) => `<li class="bad">ignored "closure" by ${addrLink(c.creator)} (${creatorRole(roles, c.creator)}): not an inspector</li>`).join("")
+  const exp = blocksToDate(e.expiresAt, state.atBlock)
+  const fixes = r.fixes.map((f) => linkLine(f, `fix claim: "${esc(payloadJson(f).text)}"`)).join("")
+  const closure = r.closure ? linkLine(r.closure, `closed: "${esc(payloadJson(r.closure).text)}"`, "ok") : ""
+  const fake = r.fakeClosures.map((c) => linkLine(c, `<b>ignored</b> "closure" (not an inspector): "${esc(payloadJson(c).text)}"`, "bad")).join("")
   return `<article class="remark sev${sev}">
-    <div class="rhead">${badge(r.status)} <span class="sev">sev ${sev} · ${SEVERITY[sev]}</span> <span class="muted">${esc(attrValue(e, "section"))} · ${created.toISOString().slice(0, 16).replace("T", " ")} UTC</span></div>
+    <div class="rhead"><span class="vbadge ok" title="$creator ${e.creator} is an inspector in the client's roster">verified</span> ${statusBadge(r.status)} <span class="sev">sev ${sev} · ${SEVERITY[sev]}</span> <span class="muted">${esc(attrValue(e, "section"))} · ${created.toISOString().slice(0, 16).replace("T", " ")} UTC</span></div>
     <p class="rtext">${esc(p.text)}</p>
     <div class="meta">
       ${p.location ? `<span>at ${esc(p.location)}</span>` : ""}${p.norm_ref ? `<span>norm: ${esc(p.norm_ref)}</span>` : ""}
-      <span>verified: <code>$creator</code> ${addrLink(e.creator)} is an inspector</span>
-      <span>readonly: ${e.creationFlags?.readonly ? "yes" : "no"} · anyone may extend: ${e.creationFlags?.permissionlessExtension ? "yes" : "no"}</span>
-      <span>expires ≈ ${exp.toISOString().slice(0, 10)}</span>
-      <span class="k">key <code>${e.key}</code> <button class="ghost tiny" data-copy="${e.key}">copy</button></span>
+      <span>inspector ${addrLink(e.creator)}</span>
+      <span>${entityLink(e.key)} · ${txLink(state.txs.get(e.key.toLowerCase()), "created in tx") || "tx…"}</span>
+      <span>readonly ${e.creationFlags?.readonly ? "yes" : "no"} · anyone may extend ${e.creationFlags?.permissionlessExtension ? "yes" : "no"} · expires ≈ ${exp.toISOString().slice(0, 10)}</span>
+      <span class="k"><button class="ghost tiny" data-copy="${e.key}" title="${e.key}">copy key</button></span>
     </div>
     ${p.photo_sha256 ? `<div class="photo">photo SHA-256 <code>${p.photo_sha256.slice(0, 16)}…</code> <label class="ghost tiny">check a photo <input type="file" data-hash="${p.photo_sha256}" hidden /></label><span class="photoRes"></span></div>` : ""}
     <ul class="links">${fixes}${closure}${fake}</ul>
   </article>`
+}
+
+function forgedCard(e) {
+  const role = creatorRole(state.roles, e.creator)
+  const p = payloadJson(e)
+  return `<div class="forged"><span class="vbadge bad">forged</span> <span class="sev">sev ${attrValue(e, "severity")}</span> "${esc(p.text)}"
+    <div class="meta"><span>written by ${addrLink(e.creator)} <span class="role ${role}">${role}</span>, not an inspector</span><span>${entityLink(e.key)} · ${txLink(state.txs.get(e.key.toLowerCase()), "created in tx")}</span></div></div>`
 }
 
 function renderCurl(f, roles) {
@@ -81,32 +103,95 @@ function renderCurl(f, roles) {
   $("curl").textContent = `curl -s ${RPC_HTTP} -H 'content-type: application/json' --data '${JSON.stringify(body)}'`
 }
 
+function renderJournal() {
+  const st = $("status").value
+  const list = state.remarks.filter((r) => !st || r.status === st)
+  const count = (s) => state.remarks.filter((r) => r.status === s).length
+  const more = state.cursor ? "+" : ""
+  $("tiles").innerHTML = state.roles
+    ? `<div class="tile"><b>${state.remarks.length}${more}</b><span>verified remarks</span></div>
+       <div class="tile"><b>${count("open")}</b><span>open</span></div>
+       <div class="tile"><b>${count("closed")}</b><span>closed by an inspector</span></div>
+       <div class="tile bad"><b>${state.forged.length}</b><span>forged records ignored</span></div>`
+    : ""
+  $("stats").innerHTML = state.roles
+    ? `<span>${state.remarks.length} loaded${state.cursor ? ", more on Arkiv" : ""}</span><span>${count("fix-claimed")} fix claimed</span><span class="muted">snapshot at block ${state.atBlock}</span>`
+    : ""
+  $("journal").innerHTML = list.length ? list.map(remarkCard).join("") : `<p class="muted">No verified remarks match.</p>`
+  $("more").classList.toggle("hidden", !state.cursor)
+  $("pageInfo").textContent = state.roles ? `${state.pages} page${state.pages === 1 ? "" : "s"} of ${PAGE}, cursor pinned to block ${state.atBlock}${state.cursor ? "" : " · end of journal"}` : ""
+  $("forged").innerHTML = state.forged.length ? state.forged.map(forgedCard).join("") : "None."
+}
+
+// Creation tx links come from EntityCreated logs; looked up per page, after the cards render.
+async function addTxs(entities) {
+  const missing = entities.filter((e) => !state.txs.has(e.key.toLowerCase()))
+  if (!missing.length) return
+  try {
+    const m = await creationTxs(pub, missing)
+    for (const [k, v] of m) state.txs.set(k, v)
+  } catch (e) {
+    console.warn("creation tx lookup failed", e)
+  }
+}
+const pageEntities = (remarks) => remarks.flatMap((r) => [r.entity, ...r.fixes, ...(r.closure ? [r.closure] : []), ...r.fakeClosures])
+
 async function load() {
   const f = filters()
-  history.replaceState(null, "", `?project=${encodeURIComponent(f.project)}&client=${encodeURIComponent(f.trustRoot)}`)
+  history.replaceState(null, "", `?project=${encodeURIComponent(f.project)}${f.trustRoot.toLowerCase() !== DEMO_CLIENT.toLowerCase() ? "&client=" + encodeURIComponent(f.trustRoot) : ""}`)
+  document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c.dataset.project === f.project))
   $("journal").innerHTML = `<p class="muted">Querying Arkiv…</p>`
+  $("newActivity")?.remove()
   try {
-    state.head = await pub.getBlockNumber()
-    const j = await loadJournal(pub, f)
-    state.journal = j
-    renderRoles(j.roles, f)
-    renderCurl(f, j.roles)
-    const st = $("status").value
-    const list = j.remarks.filter((r) => !st || r.status === st)
-    const count = (s) => j.remarks.filter((r) => r.status === s).length
-    $("stats").innerHTML = j.roles ? `<span>${j.remarks.length} verified remarks</span><span>${count("open")} open</span><span>${count("fix-claimed")} fix claimed</span><span>${count("closed")} closed</span><span class="badtext">${j.forged.length} unverified</span><span class="muted">block ${state.head}</span>` : ""
-    $("journal").innerHTML = list.length ? list.map((r) => remarkCard(r, j.roles)).join("") : `<p class="muted">No verified remarks match.</p>`
-    $("forged").innerHTML = j.forged.length
-      ? j.forged.map((e) => `<div class="forged">${addrLink(e.creator)} <span class="role ${creatorRole(j.roles, e.creator)}">${creatorRole(j.roles, e.creator)}</span> wrote: "${esc(payloadJson(e).text)}" <code>${short(e.key)}</code></div>`).join("")
-      : "None."
+    const atBlock = await pub.getBlockNumber()
+    const roles = await loadRoles(pub, { project: f.project, trustRoot: f.trustRoot, atBlock })
+    state = { ...state, roles, remarks: [], forged: [], cursor: undefined, atBlock, pages: 0 }
+    renderRoles(roles, f)
+    renderCurl(f, roles)
+    if (!roles || !roles.inspectors.length) return renderJournal()
+    const [page, forged] = await Promise.all([loadJournalPage(pub, { roles, ...f, pageSize: PAGE, atBlock }), loadUnverified(pub, { project: f.project, roles, atBlock })])
+    state.remarks = page.remarks
+    state.cursor = page.cursor
+    state.forged = forged
+    state.pages = 1
+    renderJournal()
+    await addTxs([roles.entity, ...pageEntities(page.remarks), ...forged])
+    renderRoles(roles, f)
+    renderJournal()
   } catch (err) {
-    $("journal").innerHTML = `<p class="badtext">Arkiv query failed: ${esc(err.shortMessage || err.message)}</p>`
+    $("journal").innerHTML = `<p class="badtext">Arkiv query failed: ${esc(rpcError(err))}</p>`
+  }
+}
+
+async function loadMore() {
+  if (!state.cursor) return
+  const f = filters()
+  $("more").disabled = true
+  try {
+    const page = await loadJournalPage(pub, { roles: state.roles, ...f, pageSize: PAGE, cursor: state.cursor, atBlock: state.atBlock })
+    state.remarks = state.remarks.concat(page.remarks)
+    state.cursor = page.cursor
+    state.pages += 1
+    renderJournal()
+    await addTxs(pageEntities(page.remarks))
+    renderJournal()
+  } catch (err) {
+    $("pageInfo").textContent = `next page failed: ${rpcError(err)}`
+  } finally {
+    $("more").disabled = false
   }
 }
 
 document.addEventListener("click", (ev) => {
   const c = ev.target.closest("[data-copy]")
   if (c) navigator.clipboard?.writeText(c.dataset.copy)
+  const chip = ev.target.closest(".chip")
+  if (chip) {
+    ev.preventDefault()
+    $("project").value = chip.dataset.project
+    $("trustRoot").value = DEMO_CLIENT
+    load()
+  }
 })
 document.addEventListener("change", async (ev) => {
   const inp = ev.target
@@ -116,42 +201,57 @@ document.addEventListener("change", async (ev) => {
     out.innerHTML = h === inp.dataset.hash ? ` <b class="oktext">matches the hash on Arkiv</b>` : ` <b class="badtext">does NOT match (${h.slice(0, 12)}…)</b>`
   }
 })
-for (const id of ["load"]) $(id).addEventListener("click", load)
-for (const id of ["minSev", "maxSev", "since", "status"]) $(id).addEventListener("change", load)
+$("load").addEventListener("click", load)
+$("more").addEventListener("click", loadMore)
+for (const id of ["minSev", "maxSev", "since"]) $(id).addEventListener("change", load)
+$("status").addEventListener("change", renderJournal)
 $("copyCurl").addEventListener("click", () => navigator.clipboard?.writeText($("curl").textContent))
 
 // ---------- live events over WebSocket (no fromBlock, so the SDK subscribes instead of polling) ----------
 let reloadTimer
+function onOurEvent() {
+  // On the first page the journal reloads by itself; deeper in a cursor walk we offer a refresh
+  // instead of throwing away the pages the reader already loaded.
+  if (state.pages <= 1) {
+    clearTimeout(reloadTimer)
+    reloadTimer = setTimeout(load, 1500)
+  } else if (!$("newActivity")) {
+    const b = document.createElement("button")
+    b.id = "newActivity"
+    b.textContent = "New activity on this project: refresh"
+    b.addEventListener("click", load)
+    $("stats").after(b)
+  }
+}
+
 function startLive() {
   try {
     const ws = createPublicClient({ chain: tiramisu, transport: webSocket(RPC_WS) })
-    const tracked = () => {
-      const j = state.journal
-      if (!j) return new Set()
-      return new Set([...j.remarks.map((r) => r.entity.key), ...j.forged.map((e) => e.key)].map((k) => k.toLowerCase()))
-    }
+    const tracked = () =>
+      new Set([...pageEntities(state.remarks), ...state.forged, ...(state.roles ? [state.roles.entity] : [])].map((e) => e.key.toLowerCase()))
     ws.watchEntityEvents({
       onEvent: async (ev) => {
         $("liveText").textContent = "live"
         $("live").classList.add("on")
-        // Events carry no attributes, so a new entity is looked up once to see if it belongs to SiteLog.
-        let ours = tracked().has(String(ev.entityKey).toLowerCase())
+        // Events carry no attributes. Looking up every new entity on a shared chain would burn the
+        // public RPC quota (friction F7), so a new entity counts as ours when its owner is a wallet
+        // this page cares about: the roster, the client, or the visitor's own connected wallet.
+        const k = String(ev.entityKey).toLowerCase()
+        let ours = tracked().has(k)
         if (!ours && ev.type === "EntityCreated") {
-          try {
-            const e = await pub.getEntity(ev.entityKey)
-            ours = attrValue(e, "app") === APP && attrValue(e, "project") === filters().project
-          } catch {}
+          const o = String(ev.owner || "").toLowerCase()
+          const watched = new Set([...(state.roles?.inspectors || []), ...(state.roles?.contractors || []), filters().trustRoot.toLowerCase(), String(state.me || "").toLowerCase()])
+          ours = watched.has(o)
         }
         if (!ours) return
         const li = document.createElement("li")
         const who = ev.owner || ev.newOwner || ""
-        li.innerHTML = `<span class="evt">${esc(ev.type)}</span> <code>${short(ev.entityKey)}</code> ${who ? "owner " + addrLink(who) : ""} <span class="muted">block ${ev.blockNumber ?? ""} · ${new Date().toISOString().slice(11, 19)} UTC</span>`
+        li.innerHTML = `<span class="evt">${esc(ev.type)}</span> ${entityLink(ev.entityKey)} ${who ? "owner " + addrLink(who) : ""} ${txLink(ev.transactionHash)} <span class="muted">block ${ev.blockNumber ?? ""} · ${new Date().toISOString().slice(11, 19)} UTC</span>`
         const list = $("events")
         if (list.firstElementChild?.classList.contains("muted")) list.innerHTML = ""
         list.prepend(li)
         while (list.children.length > 30) list.lastElementChild.remove()
-        clearTimeout(reloadTimer)
-        reloadTimer = setTimeout(load, 1500)
+        onOurEvent()
       },
       onError: (e) => {
         $("liveText").textContent = "socket error: " + (e.shortMessage || e.message).slice(0, 60)
@@ -164,31 +264,57 @@ function startLive() {
   }
 }
 
-// ---------- writes with the visitor's own wallet ----------
+// ---------- writes with the visitor's own wallet (EIP-1193: MetaMask, Rabby, ...) ----------
 function logw(s) {
   const el = $("writeLog")
   el.classList.remove("hidden")
-  el.textContent = `${new Date().toISOString().slice(11, 19)} ${s}\n` + el.textContent
+  el.innerHTML = `${new Date().toISOString().slice(11, 19)} ${s}\n` + el.innerHTML
 }
 
-$("connect").addEventListener("click", async () => {
-  if (!window.ethereum) return logw("No browser wallet found. Use the CLI instead: see the README.")
+async function ensureTiramisu(eth) {
+  const id = await eth.request({ method: "eth_chainId" })
+  if (String(id).toLowerCase() === CHAIN_ID_HEX) return
   try {
-    const [a] = await window.ethereum.request({ method: "eth_requestAccounts" })
-    try {
-      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x7614d1" }] })
-    } catch {
-      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{ chainId: "0x7614d1", chainName: "Arkiv Tiramisu", nativeCurrency: { name: "Golem", symbol: "GLM", decimals: 18 }, rpcUrls: [RPC_HTTP], blockExplorerUrls: [EXPLORER] }] })
-    }
-    state.me = a
-    state.wallet = createWalletClient({ chain: tiramisu, transport: custom(window.ethereum), account: a })
-    const role = creatorRole(state.journal?.roles, a)
-    $("me").innerHTML = `${addrLink(a)} · your role in this roster: <span class="role ${role}">${role}</span>${role === "unknown" ? " (what you write will be shown as unverified)" : ""}`
-    $("writeForms").classList.remove("hidden")
+    await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_ID_HEX }] })
   } catch (e) {
-    logw("connect failed: " + (e.shortMessage || e.message))
+    // 4902: the wallet does not know the chain yet, so add it (MetaMask switches to it after adding).
+    if (e.code !== 4902 && e.data?.originalError?.code !== 4902 && !/unrecognized|not added|4902/i.test(e.message || "")) throw e
+    await eth.request({
+      method: "wallet_addEthereumChain",
+      params: [{ chainId: CHAIN_ID_HEX, chainName: "Arkiv Tiramisu testnet", nativeCurrency: { name: "GLM", symbol: "GLM", decimals: 18 }, rpcUrls: [RPC_HTTP], blockExplorerUrls: [EXPLORER] }],
+    })
   }
-})
+  const after = await eth.request({ method: "eth_chainId" })
+  if (String(after).toLowerCase() !== CHAIN_ID_HEX) throw new Error(`wallet is on chain ${after}, not Tiramisu (${CHAIN_ID_HEX})`)
+}
+
+function showMe() {
+  const role = creatorRole(state.roles, state.me)
+  $("me").innerHTML = `${addrLink(state.me)} · your role in this roster: <span class="role ${role}">${role}</span>${role === "unknown" ? " (what you write will show as forged/unverified)" : ""}`
+}
+
+async function connect() {
+  const eth = window.ethereum
+  if (!eth) return logw("No browser wallet found. Install MetaMask, or use the CLI: see the README.")
+  try {
+    const [a] = await eth.request({ method: "eth_requestAccounts" })
+    await ensureTiramisu(eth)
+    state.me = a
+    state.wallet = createWalletClient({ chain: tiramisu, transport: custom(eth), account: a })
+    const bal = await pub.getBalance({ address: a })
+    showMe()
+    $("me").innerHTML += ` · ${(Number(bal) / 1e18).toFixed(4)} GLM`
+    $("writeForms").classList.remove("hidden")
+    if (!eth._sitelogListeners && eth.on) {
+      eth._sitelogListeners = true
+      eth.on("accountsChanged", (accs) => (accs[0] ? connect() : $("writeForms").classList.add("hidden")))
+      eth.on("chainChanged", () => connect())
+    }
+  } catch (e) {
+    logw("connect failed: " + esc(e.shortMessage || e.message))
+  }
+}
+$("connect").addEventListener("click", connect)
 
 async function fileHash(id) {
   const f = $(id).files?.[0]
@@ -197,12 +323,15 @@ async function fileHash(id) {
 
 async function run(label, fn) {
   try {
-    logw(label + "… confirm in your wallet")
+    await ensureTiramisu(window.ethereum)
+    logw(esc(label) + "… confirm in your wallet")
     const r = await fn()
-    logw(`${label}: done, tx ${r.txHash}${r.entityKey ? " entity " + r.entityKey : ""}${r.createdEntities ? " created " + r.createdEntities.join(",") : ""}`)
+    const created = r.createdEntities || (r.entityKey ? [r.entityKey] : [])
+    logw(`${esc(label)}: done, ${txLink(r.txHash)}${created.length ? " · " + created.map((k) => entityLink(k)).join(", ") : ""}`)
     setTimeout(load, 2500)
+    return r
   } catch (e) {
-    logw(`${label} failed: ${e.shortMessage || e.message}`)
+    logw(`${esc(label)} failed: ${esc(e.shortMessage || e.message)}`)
   }
 }
 

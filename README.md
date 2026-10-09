@@ -3,6 +3,8 @@
 **A construction site inspection log the contractor cannot rewrite.** The site inspector's remarks live on [Arkiv](https://arkiv.network), the Web3 database, and the app decides who wrote each record from its on-chain creator, never from a field anyone can type.
 
 - Live app: https://ttimesai-star.github.io/sitelog/ (Tiramisu testnet, no login, read-only without a wallet)
+  - `?project=demo-1`: the story, 4 remarks, a fix claim, a closure and two contractor forgeries
+  - `?project=load-1`: 160 remarks, 27 fix claims, 27 closures, to show cursor pagination ("Load 25 more")
 - Tracks: **Security** (trust from `$creator`) and **Censorship Resistance** (anyone can read and query the log from the public RPC, without SiteLog)
 - Arkiv docs for this repo: [`arkiv/schema.md`](arkiv/schema.md) · [`arkiv/friction.md`](arkiv/friction.md)
 - Status: work in progress during Arkiv: Global Tour Stop, 9 to 18 October 2026
@@ -47,6 +49,18 @@ curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: ap
 
 The live page shows the exact query it just ran for the current filters, with a copy button.
 
+## Try it in five minutes (for judges)
+
+1. Open https://ttimesai-star.github.io/sitelog/. The first screen says the problem, how SiteLog works, and shows the live journal of `demo-1`, read from the public Tiramisu RPC.
+2. Each remark card has a green **verified** badge: its on-chain `$creator` is the inspector in the client's roster. The card links to the entity and to its creation transaction on the explorer.
+3. Scroll to **Forged and unverified records**: the contractor wallet wrote "All inspection remarks on Block A resolved. Signed: site inspector." It is on chain, and it is shown with a red **forged** badge, because its `$creator` is the contractor.
+4. On the stop-work remark (sev 5) the contractor's own "closure" is listed as **ignored**: the remark stays open.
+5. Switch to `load-1` and press **Load 25 more** until the end: a cursor walk over 160 remarks, pinned to one block.
+6. Copy the curl command under **Read it without SiteLog** and run it: the same verified remarks, with no SiteLog code.
+7. Optional: **Connect wallet** (MetaMask or any EIP-1193 wallet; the page adds the Tiramisu network) and write a remark. It lands on chain and shows as forged, because your wallet is not in the roster. Test GLM: https://hub.arkiv.network/faucet.
+
+The public RPC allows about 100 queries per hour per caller (friction F7) and one page load uses 4, so reloading the page some 25 times within an hour shows a quota message until the hour resets.
+
 ## Run it locally
 
 Requirements: Node.js 22 or newer.
@@ -69,6 +83,8 @@ node scripts/sitelog.mjs fix    --remark 0xREMARK_KEY --text "Fixed, ready for r
 node scripts/sitelog.mjs close  --remark 0xREMARK_KEY --text "Accepted"
 node scripts/sitelog.mjs keepalive --remark 0xREMARK_KEY --days 120
 ```
+
+Scripts that produced the demo data (synthetic wallets from a local JSON file, never committed): `scripts/seed-demo.mjs` (the `demo-1` story), `scripts/seed-load.mjs` (`load-1`, 160 remarks in batches of 40), `scripts/probe-extension.mjs` (who can extend, shorten or delete a remark; results in [`arkiv/schema.md`](arkiv/schema.md)).
 
 A remark you write from your own wallet is real and public, but it shows as unverified on the demo project, because your wallet is not in the client's roster. To run your own project, publish a roster from your wallet (`node scripts/sitelog.mjs roles --project my-site --inspectors 0x... --contractors 0x...`) and open the page with `?project=my-site&client=<your wallet>`.
 
