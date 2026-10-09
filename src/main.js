@@ -106,7 +106,7 @@ function renderCurl(f, roles) {
   const b = verifiedRemarksQuery(pub, { project: f.project, inspectors: roles.inspectors, minSeverity: f.minSeverity, maxSeverity: f.maxSeverity, sinceTs: f.sinceTs })
   const select = toRpcSelect({ key: true, creator: true, expiresAt: true, attributes: true, payload: true })
   const body = { jsonrpc: "2.0", id: 1, method: "arkiv_query", params: [b.toString(), { select, limit: "0x64" }] }
-  $("curl").textContent = `curl -s ${RPC_HTTP} -H 'content-type: application/json' --data '${JSON.stringify(body)}'`
+  $("curl").textContent = `curl -s ${RPC_HTTP} -H 'content-type: application/json' --data '${JSON.stringify(body).replace(/'/g, `'"'"'`)}'`
 }
 
 function renderJournal() {

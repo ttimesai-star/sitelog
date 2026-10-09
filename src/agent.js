@@ -97,7 +97,7 @@ function renderCurl() {
   const b = runQuery(pub, { agentId: state.agentId, runId: state.runId })
   const select = toRpcSelect({ key: true, creator: true, owner: true, expiresAt: true, payload: true })
   const body = { jsonrpc: "2.0", id: 1, method: "arkiv_query", params: [b.toString(), { select, limit: "0xc8" }] }
-  $("curl").textContent = `curl -s ${RPC_HTTP} -H 'content-type: application/json' --data '${JSON.stringify(body)}'`
+  $("curl").textContent = `curl -s ${RPC_HTTP} -H 'content-type: application/json' --data '${JSON.stringify(body).replace(/'/g, `'"'"'`)}'`
 }
 
 async function addTxs(items) {
