@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SiteLog</title>
+  <meta name="description" content="A construction site inspection log the contractor cannot rewrite. Built on Arkiv, the Web3 database (Tiramisu testnet)." />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>SiteLog</h1>
+      <p class="tag">A site inspection log the contractor cannot rewrite. Data lives on Arkiv, read straight from the public Tiramisu RPC: no SiteLog server.</p>
+    </div>
+    <div class="live" id="live"><span class="dot"></span><span id="liveText">connecting…</span></div>
+  </header>
+
+  <main>
+    <section class="card" id="projectCard">
+      <h2>Project</h2>
+      <div class="row">
+        <label>Project id <input id="project" value="demo-1" /></label>
+        <label class="grow">Client wallet (trust root) <input id="trustRoot" /></label>
+        <button id="load">Load</button>
+      </div>
+      <div id="roles" class="roles muted">Loading roster…</div>
+      <p class="hint">The roster counts only if its on-chain <code>$creator</code> is the client wallet above. A record is "verified" only if its <code>$creator</code> is an inspector in that roster. No "author" field is trusted.</p>
+    </section>
+
+    <section class="card">
+      <h2>Journal</h2>
+      <div class="row">
+        <label>Severity from <select id="minSev"></select></label>
+        <label>to <select id="maxSev"></select></label>
+        <label>Since <input type="date" id="since" /></label>
+        <label>Status
+          <select id="status"><option value="">any</option><option>open</option><option>fix-claimed</option><option>closed</option></select>
+        </label>
+      </div>
+      <div id="stats" class="stats"></div>
+      <div id="journal"></div>
+      <h3 class="warn-title">Unverified records <span class="muted">(claim to be remarks for this project, but their creator is not an inspector)</span></h3>
+      <div id="forged" class="muted">None.</div>
+    </section>
+
+    <section class="card">
+      <h2>Read it without SiteLog</h2>
+      <p>The same data, with no SiteLog code: send this query to the public Tiramisu RPC. It is the exact query this page just ran for verified remarks.</p>
+      <pre id="curl" class="code"></pre>
+      <button id="copyCurl" class="ghost">Copy</button>
+    </section>
+
+    <section class="card">
+      <h2>Write <span class="muted">(your own wallet, Tiramisu testnet)</span></h2>
+      <p class="hint">Anyone can write. Writing does not make you trusted: if your wallet is not in the roster, your remark shows up under "Unverified records" and your closure is ignored. Try it.</p>
+      <div class="row"><button id="connect">Connect wallet</button><span id="me" class="muted"></span></div>
+      <div id="writeForms" class="hidden">
+        <details open><summary>New remark (inspector)</summary>
+          <div class="row">
+            <label>Severity <select id="wSev"></select></label>
+            <label>Section <input id="wSection" value="concrete" /></label>
+            <label class="grow">Location <input id="wLoc" placeholder="Block A, floor 3, axis 4/B" /></label>
+          </div>
+          <label>Text <textarea id="wText" rows="2" placeholder="Synthetic demo text only. No real names or personal data."></textarea></label>
+          <div class="row"><label>Photo (only its SHA-256 goes on Arkiv) <input type="file" id="wPhoto" /></label><button id="wRemark">Create remark</button></div>
+        </details>
+        <details><summary>Claim a fix (contractor)</summary>
+          <div class="row"><label class="grow">Remark key <input id="fRemark" /></label></div>
+          <label>Text <textarea id="fText" rows="2"></textarea></label>
+          <div class="row"><label>Photo <input type="file" id="fPhoto" /></label><button id="wFix">Claim fix</button></div>
+        </details>
+        <details><summary>Close a remark (inspector)</summary>
+          <div class="row"><label class="grow">Remark key <input id="cRemark" /></label><label class="grow">Fix key (optional) <input id="cFix" /></label></div>
+          <label>Text <textarea id="cText" rows="2"></textarea></label>
+          <button id="wClose">Close (atomic batch)</button>
+        </details>
+        <details><summary>Keep a remark alive (anyone)</summary>
+          <div class="row"><label class="grow">Remark key <input id="kRemark" /></label><label>Days <input id="kDays" value="120" size="4" /></label><button id="wKeep">Extend</button></div>
+        </details>
+      </div>
+      <pre id="writeLog" class="code hidden"></pre>
+    </section>
+
+    <section class="card">
+      <h2>Live events <span class="muted">(WebSocket, no polling)</span></h2>
+      <ul id="events" class="events"><li class="muted">Waiting for Arkiv entity events…</li></ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>MIT licence. Synthetic demo data only. <a href="https://github.com/ttimesai-star/sitelog">Source</a> · <a id="explorerLink" href="https://tiramisu.explorer.arkiv.network">Tiramisu explorer</a> · Built on <a href="https://arkiv.network">Arkiv</a>.</p>
+  </footer>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
