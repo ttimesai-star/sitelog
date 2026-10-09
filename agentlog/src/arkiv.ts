@@ -73,7 +73,7 @@ export interface AgentLogOptions {
   /** Keep raw inputs and outputs in memory for a local evidence file (never sent to Arkiv). */
   keepRaw?: boolean
   /** Continue a run another process started (see resumeState). */
-  resume?: { step: number; prev: Hex }
+  resume?: { step: number; prev: Hex; keys?: Hex[] }
 }
 
 export interface Landed {
@@ -95,6 +95,7 @@ export class AgentLog {
   readonly opts: Required<Omit<AgentLogOptions, "custodian" | "resume" | "publicClient">> & { custodian?: Hex; publicClient?: PublicArkivClient }
   readonly entries: Landed[] = []
   private pending: Landed[] = []
+  private priorKeys: Hex[] = []
   private step = 0
   private prev: Hex = GENESIS
   private queue: Promise<unknown> = Promise.resolve()
@@ -110,6 +111,7 @@ export class AgentLog {
     if (resume) {
       this.step = resume.step
       this.prev = resume.prev
+      if (resume.keys) this.priorKeys = [...resume.keys]
     }
   }
 
@@ -167,26 +169,41 @@ export class AgentLog {
     if (!batch.length && !extraExtensions.length) return
     const { wallet, custodian, publicClient } = this.opts
     if (custodian && !publicClient) throw new Error("custodian needs publicClient (to predict entity keys)")
-    // Creates first, then (optionally) the ownership transfer of the very keys they mint.
-    // predictEntityKeys pins each create to a salt, so the keys are known before the tx is sent.
-    for (const part of chunk(batch, custodian ? Math.floor(MAX_OPS / 2) : MAX_OPS)) {
-      const creates = part.map((l) => ({ ...entryParams(l.entry, l.entry.action === ACTION_END ? this.opts.sealedDays : days) })) as Array<ReturnType<typeof entryParams> & { salt?: bigint }>
-      let ownershipChanges: { entityKey: Hex; newOwner: Hex }[] | undefined
-      if (custodian) {
-        const predicted = await publicClient!.predictEntityKeys({ owner: this.opts.account.address as Hex, count: creates.length })
-        predicted.forEach((p, i) => (creates[i].salt = p.salt as bigint))
-        ownershipChanges = predicted.map((p) => ({ entityKey: p.key, newOwner: custodian }))
+    try {
+      if (custodian && batch.length) {
+        const allPredicted = await publicClient!.predictEntityKeys({ owner: this.opts.account.address as Hex, count: batch.length })
+        let offset = 0
+        for (const part of chunk(batch, Math.floor(MAX_OPS / 2))) {
+          const creates = part.map((l) => ({ ...entryParams(l.entry, l.entry.action === ACTION_END ? this.opts.sealedDays : days) })) as Array<ReturnType<typeof entryParams> & { salt?: bigint }>
+          const partPredicted = allPredicted.slice(offset, offset + part.length)
+          offset += part.length
+          partPredicted.forEach((p, i) => (creates[i].salt = p.salt as bigint))
+          const ownershipChanges = partPredicted.map((p) => ({ entityKey: p.key, newOwner: custodian }))
+          const r = await wallet.executeBatch({ creates, ownershipChanges })
+          r.createdEntities.forEach((k, i) => {
+            part[i].entity_key = k
+            part[i].tx = r.txHash
+          })
+          this.txs.push(r.txHash)
+        }
+      } else {
+        for (const part of chunk(batch, MAX_OPS)) {
+          const creates = part.map((l) => ({ ...entryParams(l.entry, l.entry.action === ACTION_END ? this.opts.sealedDays : days) }))
+          const r = await wallet.executeBatch({ creates })
+          r.createdEntities.forEach((k, i) => {
+            part[i].entity_key = k
+            part[i].tx = r.txHash
+          })
+          this.txs.push(r.txHash)
+        }
       }
-      const r = await wallet.executeBatch({ creates, ownershipChanges })
-      r.createdEntities.forEach((k, i) => {
-        part[i].entity_key = k
-        part[i].tx = r.txHash
-      })
-      this.txs.push(r.txHash)
-    }
-    for (const keys of chunk(extraExtensions, MAX_OPS)) {
-      const r = await wallet.executeBatch({ extensions: keys.map((entityKey) => ({ entityKey, expires: ExpirationTime.fromDays(this.opts.sealedDays) })) })
-      this.txs.push(r.txHash)
+      for (const keys of chunk(extraExtensions, MAX_OPS)) {
+        const r = await wallet.executeBatch({ extensions: keys.map((entityKey) => ({ entityKey, expires: ExpirationTime.fromDays(this.opts.sealedDays) })) })
+        this.txs.push(r.txHash)
+      }
+    } catch (err) {
+      this.pending.unshift(...batch)
+      throw err
     }
   }
 
@@ -198,7 +215,7 @@ export class AgentLog {
   seal(output: unknown = null, note = "run sealed") {
     return this.serial(async () => {
       if (this.sealed) throw new Error("already sealed")
-      const earlier = () => this.entries.filter((l) => l.entity_key).map((l) => l.entity_key as Hex)
+      const earlier = () => [...this.priorKeys, ...this.entries.filter((l) => l.entity_key).map((l) => l.entity_key as Hex)]
       const input = { steps: this.step, head: this.prev }
       const entry = await buildEntry(
         { agent_id: this.opts.agentId, run_id: this.opts.runId, step: this.step, action: ACTION_END, tool: "", input_hash: await hashValue(input), output_hash: await hashValue(output), prev_entry_hash: this.prev, note },

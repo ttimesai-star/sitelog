@@ -70,7 +70,8 @@ function logFor(agent: string, run: string) {
   if (r.sealed) throw new Error(`run ${run} is already sealed`)
   const acct = account()
   const wallet = createWalletClient({ chain: tiramisu, transport: http(), account: acct })
-  const log = new AgentLog({ wallet, account: acct, agentId: agent, runId: run, resume: { step: r.step, prev: r.prev } })
+  const priorKeys = prior.map((l) => l.entity_key).filter((k): k is Hex => Boolean(k))
+  const log = new AgentLog({ wallet, account: acct, agentId: agent, runId: run, resume: { step: r.step, prev: r.prev, keys: priorKeys } })
   return { log, prior }
 }
 

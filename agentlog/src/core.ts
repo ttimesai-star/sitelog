@@ -185,11 +185,12 @@ export async function verifyRun(entries: Entry[], opts: VerifyOptions = {}): Pro
 
   const byStep = new Map<number, Entry[]>()
   for (const e of sorted) byStep.set(e.step, [...(byStep.get(e.step) ?? []), e])
-  const maxStep = sorted[sorted.length - 1].step
+  const minStep = Math.min(0, ...sorted.map((e) => (Number.isInteger(e.step) ? e.step : 0)))
+  const maxStep = Math.max(0, ...sorted.map((e) => (Number.isInteger(e.step) ? e.step : 0)))
 
   let prev: string = GENESIS
   let sealedAt = -1
-  for (let s = 0; s <= maxStep; s++) {
+  for (let s = minStep; s <= maxStep; s++) {
     const at = byStep.get(s)
     if (!at) {
       report.problems.push(`step ${s} is missing (deleted, expired or never written): the chain is broken here`)
@@ -199,6 +200,7 @@ export async function verifyRun(entries: Entry[], opts: VerifyOptions = {}): Pro
     if (at.length > 1) report.problems.push(`step ${s} has ${at.length} different entries (fork: the signer wrote two histories)`)
     for (const e of at) {
       const problems: string[] = []
+      if (!Number.isInteger(e.step) || e.step < 0) problems.push(`step ${e.step} must be a non-negative integer`)
       if (e.v !== 1) problems.push(`unknown version ${e.v}`)
       if (e.agent_id !== report.agent_id || e.run_id !== report.run_id) problems.push("belongs to another agent or run")
       let recomputed: string
@@ -271,6 +273,6 @@ export async function verifyExport(bundle: ExportBundle): Promise<RunReport> {
   for (const x of withCreator) creators.set(String(x.entry.entry_hash).toLowerCase(), String(x.creator))
   return verifyRun(
     bundle.entries.map((x) => x.entry),
-    { signer: bundle.signer, creators: withCreator.length === bundle.entries.length && withCreator.length ? creators : undefined },
+    { signer: bundle.signer, creators: withCreator.length ? creators : undefined },
   )
 }
