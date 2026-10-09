@@ -111,6 +111,10 @@ The open question from the first day, tested on the demo entities: `severity >= 
 
 Entities carry `createdAt` (a block) but no tx hash. `getLogs({ address: 0x4400…0044, event: EntityCreated, args: { entityKey: [keys] }, fromBlock, toBlock })` returns the creation tx of every key in one call; for the demo roster it returned `0xb005…b742`, the hash the SDK printed at creation. The operations address is not exported by the SDK (`ARKIV_ADDRESS` is internal), so we copied it.
 
+### T8. Writing through a browser wallet (EIP-1193) with `custom(window.ethereum)` (9 Oct)
+
+`createWalletClient({ chain: tiramisu, transport: custom(window.ethereum), account: address })`, then `createEntity` from the production build, in headless Chromium with an injected EIP-1193 provider that starts on chain 1: the page asked `wallet_switchEthereumChain`, got 4902, called `wallet_addEthereumChain` with chain ID `0x7614d1`, and then `createEntity` went out as one `eth_sendTransaction` to the operations address; the SDK then waited with `eth_getTransactionReceipt` through the same provider. The remark landed (tx `0x4d9b…3601`) and appeared in the `load-1` journal as verified, because the wallet is the roster's inspector. Expected and got. Not tested: a real MetaMask extension (headless browsers do not run it).
+
 ## Open questions we are testing next
 
 - `watchEntityEvents` events carry no attributes, so an app must call `getEntity` per `EntityCreated` to know whether the entity is its own. Is there a server-side filter for subscriptions?
