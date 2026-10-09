@@ -1,0 +1,27 @@
+/* Agent Action Log page: additions to style.css */
+.nav { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; padding-top: 10px; }
+.verdict { border: 1px solid var(--line); border-left: 5px solid var(--unknown); border-radius: 8px; padding: 10px 14px; margin: 8px 0; background: var(--bg); }
+.verdict ul { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+.verdict.ok { border-left-color: var(--ok); }
+.verdict.ok b { color: var(--ok); }
+.verdict.warn { border-left-color: var(--warn); }
+.verdict.warn b { color: var(--warn); }
+.verdict.bad { border-left-color: var(--bad); }
+.verdict.bad b { color: var(--bad); }
+.facts { font-size: 13px; margin: 6px 0 10px; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+table.steps { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.steps th { text-align: left; font-weight: 600; font-size: 12px; color: var(--muted); background: var(--bg); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+table.steps td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.steps tr:last-child td { border-bottom: 0; }
+table.steps td.note { max-width: 260px; overflow-wrap: anywhere; }
+table.steps tr.badrow td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.act { font-weight: 600; white-space: nowrap; }
+ul.why { margin: 0; padding-left: 18px; }
+ul.why li { margin: 4px 0; }
+@media (max-width: 640px) { .nav { padding-top: 0; } }
+#runSel { max-width: 100%; }
+.cardhead > * { min-width: 0; max-width: 100%; }
+@media (max-width: 640px) { #runSel { width: calc(100vw - 72px); } }
+table.steps { min-width: 820px; }
+table.steps td.note { min-width: 180px; }

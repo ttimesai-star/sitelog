@@ -1,4 +1,4 @@
-# Friction report: building SiteLog on Arkiv
+# Friction report: building SiteLog and the Agent Action Log on Arkiv
 
 Kept while building, newest findings appended at the end of each section. Every entry is something we actually ran.
 Environment: Windows 10, Node.js 24.19.0, npm 11.17.0, `@arkiv-network/sdk` 0.8.1, `viem` 2.57.4, Tiramisu testnet (chain ID 7738577), public RPC `https://rpc.tiramisu.db-chain.testnet.arkiv.network`. Dates are 2026, UTC.
@@ -81,6 +81,22 @@ Environment: Windows 10, Node.js 24.19.0, npm 11.17.0, `@arkiv-network/sdk` 0.8.
 - **Steps:** send any `arkiv_query` with `curl -s -D - -o /dev/null` and read the `RateLimit` and `Arkiv-Cost` headers; repeat until 429.
 - **What would fix it:** document the quota and the cost per method on the "query the RPC directly" page; let a static page raise its quota with a public, origin-restricted read key; put `$creator` (or the attributes) into `EntityCreated` events, so a live feed can filter without one lookup per event. What we changed: the live feed now filters events by owner wallet with no extra calls, the page fails fast on 429 and says why, and HTTP retries are cut to one.
 
+### F8. The "predict a key, reference it in the same batch" example cannot run on any one client (TypeScript SDK 0.8.1, 9 Oct)
+
+- **Surface:** TypeScript SDK, `predictEntityKeys` and `executeBatch`; their JSDoc.
+- **Expected:** the JSDoc example of `predictEntityKeys` works as written: `const [parent, child] = await client.predictEntityKeys({ owner: account.address, count: 2 })`, then `await client.executeBatch({ creates: [...] })` on the same `client`. The `createWalletClient` docs also say a wallet client exposes the mutating actions "on top of the read actions a Public Client has".
+- **Actual:** `predictEntityKeys` is a public-client action only. On a wallet client `typeof wallet.predictEntityKeys` is `"undefined"` at runtime, and the `WalletArkivClient` type has no such member (`tsc`: "Property 'predictEntityKeys' does not exist"). `executeBatch` exists only on the wallet client. So the example needs two clients.
+- **Steps:** `const w = createWalletClient({ chain: tiramisu, transport: http(), account }); console.log(typeof w.predictEntityKeys)` prints `undefined`.
+- **What would fix it:** add `predictEntityKeys` to the wallet client's actions (it already knows its account, so `owner` could default to it), or show both clients in the example. We pass a public client next to the wallet in `AgentLog` (`publicClient` option).
+
+### F9. Permissionless extension lets a third party make the owner's atomic batch revert (Tiramisu, 9 Oct)
+
+- **Surface:** `extendEntity` inside `executeBatch`, on an entity with `permissionlessExtension`.
+- **Expected:** an owner's batch "write the seal, extend my earlier entries to 180 days" lands, or extensions that would not move an expiry later are skipped.
+- **Actual:** an extension sets the expiry and rejects any value that is not later than the current one. Anyone may extend a permissionless entity, so a third party who extends one entry to 365 days makes the owner's batch fail as a whole: "entity 0xd3c6...a2d3 already expires at block 16123150, so extending it to 8131151 would shorten its life". Probe: our agent wallet created an entity (14 days), another wallet extended it to 365 days, then the agent sent one batch with a create and an extension to 180 days: rejected at gas estimation (no cost, but no seal either).
+- **Why it matters:** the flag that lets an auditor keep evidence alive also lets anyone block an atomic "seal + retain" batch, or SiteLog's "close + extend" batch, by extending one entity first.
+- **What would fix it:** an "extend to at least" mode (keep `max(current, requested)`), or an option to skip non-lengthening extensions in a batch instead of reverting it. What we do: `seal()` catches the revert, lands `run.end` alone, then extends the remaining entries one by one.
+
 ## Tested paths that worked as documented
 
 ### T1. Reads against the public RPC with no key (9 Oct)
@@ -114,6 +130,14 @@ Entities carry `createdAt` (a block) but no tx hash. `getLogs({ address: 0x4400â
 ### T8. Writing through a browser wallet (EIP-1193) with `custom(window.ethereum)` (9 Oct)
 
 `createWalletClient({ chain: tiramisu, transport: custom(window.ethereum), account: address })`, then `createEntity` from the production build, in headless Chromium with an injected EIP-1193 provider that starts on chain 1: the page asked `wallet_switchEthereumChain`, got 4902, called `wallet_addEthereumChain` with chain ID `0x7614d1`, and then `createEntity` went out as one `eth_sendTransaction` to the operations address; the SDK then waited with `eth_getTransactionReceipt` through the same provider. The remark landed (tx `0x4d9bâ€¦3601`) and appeared in the `load-1` journal as verified, because the wallet is the roster's inspector. Expected and got. Not tested: a real MetaMask extension (headless browsers do not run it).
+
+### T9. Ownership handed to a custodian in the transaction that creates the entity (9 Oct)
+
+`predictEntityKeys({ owner: agent, count: n })` on a public client, the returned salts on the `creates`, and `ownershipChanges` with the predicted keys, in one `executeBatch` from the agent wallet: all 18 steps of the two complete demo runs landed this way (one step per transaction, `batchSize` 1). `getEntity` afterwards: `creator` is the agent `0x3ad7...c546`, `owner` is the custodian `0xBDe3...C6f0`, `readonly` and `permissionlessExtension` set. The agent's own `deleteEntity` and `patchEntity` on step 2 are both rejected: "entity 0xadef...08ab is owned by 0xBDe3...C6f0, not 0x3ad7...c546" ([`scripts/probe-agentlog-custody.mjs`](../scripts/probe-agentlog-custody.mjs)). The seal batch, sent by the agent after the transfer, still extended every step to 180 days, because the steps allow permissionless extension. Expected and got. Note: a prediction holds only while nothing else from the same wallet is in flight; `AgentLog` writes strictly in sequence.
+
+### T10. A run read back by attributes and verified in the browser (9 Oct)
+
+`app = str('agentlog') AND agent = str(...) AND run = str(...)` returns every record of a run, including two written by another wallet; `action = str('run.start')` plus `createdBy(agent)` lists an agent's runs. `step` written as `u64(0)` round-trips. The signed entry in the payload comes back intact through `toJson()`, and the page recovers all 9 EIP-191 signatures with viem in the browser. Expected and got.
 
 ## Open questions we are testing next
 

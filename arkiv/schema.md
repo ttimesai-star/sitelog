@@ -1,5 +1,8 @@
 # SiteLog: Arkiv schema
 
+Two apps share this repository and the same trust rule (trust comes from `$creator`, never from a field anyone can type):
+the **Agent Action Log** (`app = agentlog`, [below](#agent-action-log)) and the **construction site log** (`app = sitelog`, this first part).
+
 Network: Tiramisu testnet (chain ID 7738577). SDK: `@arkiv-network/sdk` 0.8.1.
 Source of truth for the code below: [`src/lib/sitelog.js`](../src/lib/sitelog.js).
 
@@ -132,3 +135,54 @@ What it does not protect, stated plainly:
 - Real names, phone numbers, e-mails of inspectors or workers: never, not even hashed. A wallet address stands for a role.
 - Contract prices and commercial terms: not needed for any query.
 - The demo uses synthetic data only.
+
+## Agent Action Log
+
+Source of truth: [`agentlog/src/arkiv.ts`](../agentlog/src/arkiv.ts) (entities, writer, reader) and [`agentlog/src/core.ts`](../agentlog/src/core.ts) (entry format, hashing, verification; no network).
+
+### Entity: one step of an agent run
+
+| | |
+|---|---|
+| Attributes | `app` str `agentlog`; `v` i32 1; `kind` str `step` or `seal` (the `run.end` entry); `agent` str; `run` str; `step` u64 (0-based); `action` str (`run.start`, `llm.call`, `tool.call`, `tool.error`, `run.end`, or custom); `tool` str (tool or model name, `-` if none); `ts` u64 (Unix seconds, the agent's clock); `entry` bytes32 (`entry_hash`); `prev` bytes32 (`prev_entry_hash`) |
+| Payload (JSON) | the full signed entry: `{ v, agent_id, run_id, step, action, tool, input_hash, output_hash, prev_entry_hash, timestamp, signer, note, entry_hash, sig }` |
+| Expiration | 14 days while the run is live. `seal()` writes `run.end` with 180 days and, in the same batch, extends every earlier step of the run to 180 days |
+| Flags | `readonly` and `permissionlessExtension` |
+| Owner | the agent wallet, or with `custodian` set, the custodian: the batch that creates the steps carries `ownershipChanges` for the keys it mints (predicted with `predictEntityKeys` and pinned by salt). `$creator` stays the agent |
+
+Why the hashes are attributes as well as payload fields: `entry = bytes32(...)` finds the entity of a hash from an export, and `prev = bytes32(...)` returns every entry that claims to follow a given step, which is how a fork (two histories signed by one key) shows up in one query.
+
+Why `step`, `action`, `tool` and `ts` are attributes: an auditor asks "every `http_get` of this agent", "every run started by this wallet" or "steps written between two dates" without downloading runs.
+
+### Entry hash and signature
+
+- `input_hash` / `output_hash`: SHA-256 of the canonical JSON of the value (object keys sorted at every level, no whitespace, `undefined` dropped, bigint as a decimal string), as `0x` + 64 hex.
+- `entry_hash`: SHA-256 of the canonical JSON of the twelve body fields (everything except `entry_hash` and `sig`).
+- `sig`: EIP-191 `personal_sign` of the string `agentlog:v1:<entry_hash>` by `signer`.
+- `prev_entry_hash`: `entry_hash` of step `n-1`; step 0 points at 32 zero bytes.
+
+### Trust and verification
+
+A step counts only if its `$creator` is the agent wallet the auditor expects. Records with another `$creator` that claim the same agent and run are listed as forged and never enter the chain, even when they are exact copies of genuine entries (the copy carries a valid signature by the agent, but the chain records who created it).
+
+For the steps that count, `verifyRun` checks: the recomputed `entry_hash`; the signature recovers to `signer`; `signer` equals the expected wallet and the on-chain `$creator`; `prev_entry_hash` equals the previous step's hash; steps run from 0 with no gap; no two entries share a step (fork); nothing follows `run.end`. Verdicts: `intact` (all checks pass, sealed), `open` (all checks pass, no seal yet), `broken`, `empty`.
+
+### Queries the app runs
+
+1. **One run**: every record that claims to belong to it, partitioned by `$creator` on the client; one query, pinned to one block:
+   `app = str('agentlog') AND agent = str('release-checker') AND run = str('run-20261009T152956')`
+2. **Runs of an agent wallet**, `$creator` filter on the node:
+   `app = str('agentlog') AND agent = str('release-checker') AND action = str('run.start') AND $creator = addr(0x3ad7cD724fF2c472aC5Ca5a0F0edbd6880d2c546)`
+
+The page runs these two per load, within the public RPC quota (friction F7). Creation transactions come from `EntityCreated` logs, one `eth_getLogs` per page, as in the construction app.
+
+### Lifetime and custody, tested
+
+- Steps lease 14 days and the seal batch moves the run to 180 days; the demo run shows 180 days on every entry after its seal.
+- With the custodian set, the agent's own `deleteEntity` and `patchEntity` on its step 2 are rejected ("owned by 0xBDe3..., not 0x3ad7..."), at gas estimation, at no cost ([`scripts/probe-agentlog-custody.mjs`](../scripts/probe-agentlog-custody.mjs), friction T9).
+- An auditor can extend a run with `agentlog retain`; nobody can shorten it.
+- If an auditor already extended a step beyond 180 days, the seal batch's extension of that step would revert the whole batch (friction F9). `seal()` then lands `run.end` alone and extends the remaining steps one by one.
+
+### What stays off Arkiv
+
+Raw prompts, model replies and tool results: only their hashes go on chain. The demo publishes its evidence file ([`public/demo/runs/`](../public/demo/runs/)) because its inputs are public (a GitHub API response, a public page, chain status); a real operator keeps it and shows it to an auditor. API keys never enter a hashed value: the example agent hashes the request body, not its headers.
