@@ -119,6 +119,13 @@ describe("verifyRun", () => {
     const r = await verifyRun(es, { creators })
     assert.match(r.checks[1].problems.join(), /\$creator/)
   })
+  it("detects invalid negative or non-integer steps", async () => {
+    const es = await chain(2)
+    es.push({ ...es[1], step: -1 })
+    const r = await verifyRun(es)
+    assert.equal(r.verdict, "broken")
+    assert.match(r.problems.join() + r.checks.map((c) => c.problems.join()).join(), /non-negative integer/)
+  })
 })
 
 describe("export bundle", () => {
@@ -133,6 +140,16 @@ describe("export bundle", () => {
     copy.entries[1].entry.note = "edited later"
     assert.equal((await verifyExport(copy)).verdict, "broken")
     assert.rejects(() => verifyExport({ format: "nope" } as any))
+  })
+  it("retains $creator check even if only partial entries have creator", async () => {
+    const es = await chain(3)
+    const bundle: ExportBundle = {
+      format: "agentlog-export/v1", exported_at: "", source: null, agent_id: "test-agent", run_id: "r1", signer: agent.address.toLowerCase(),
+      entries: es.map((entry, i) => ({ entity_key: `0x${i}`, creator: i === 0 ? agent.address.toLowerCase() : undefined, entry })), foreign: [], report: await verifyRun(es),
+    }
+    const r = await verifyExport(bundle)
+    assert.equal(r.verdict, "broken")
+    assert.match(r.problems.join() + r.checks.map((c) => c.problems.join()).join(), /no Arkiv entity found/)
   })
 })
 
@@ -203,16 +220,62 @@ describe("AgentLog writer", () => {
     assert.equal(batches[0].ownershipChanges[0].entityKey, `0x${"1".padStart(64, "0")}`)
   })
 
-  it("resumes a run from saved entries", async () => {
+  it("resumes a run from saved entries and extends prior steps on seal", async () => {
     const es = await chain(3, agent, false)
     const st = resumeState(es)
     assert.equal(st.step, 3)
     assert.equal(st.prev, es[2].entry_hash)
-    const { wallet } = fakeWallet()
-    const log = new AgentLog({ wallet, account: agent, agentId: "test-agent", runId: "r1", resume: st })
+    const { wallet, batches } = fakeWallet()
+    const priorKeys = ["0xkey0" as const, "0xkey1" as const, "0xkey2" as const]
+    const log = new AgentLog({ wallet, account: agent, agentId: "test-agent", runId: "r1", resume: { ...st, keys: priorKeys } })
     await log.record({ action: "tool.call", tool: "t" })
     await log.seal()
     assert.equal((await verifyRun([...es, ...log.entries.map((l) => l.entry)])).verdict, "intact")
+    // Should extend the prior keys when sealing
+    const sealBatch = batches[batches.length - 1]
+    const extKeys = (sealBatch.extensions ?? []).map((x: any) => x.entityKey)
+    assert.ok(priorKeys.every((k) => extKeys.includes(k)))
+  })
+
+  it("restores pending queue on flush failure", async () => {
+    const { wallet } = fakeWallet()
+    let failOnce = true
+    wallet.executeBatch = async (b: any) => {
+      if (failOnce) {
+        failOnce = false
+        throw new Error("RPC error")
+      }
+      return { txHash: "0xtx", createdEntities: ["0xkey"] }
+    }
+    const log = new AgentLog({ wallet, account: agent, agentId: "test-agent", runId: "r-fail", batchSize: 10 })
+    await log.start({ task: "test" })
+    await assert.rejects(() => log.flush(), /RPC error/)
+    // On retry, the failed batch should still be in pending and successfully flush
+    await log.flush()
+    assert.equal(log.entries[0].entity_key, "0xkey")
+  })
+
+  it("predicts unique salts across multi-chunk custodian flushes", async () => {
+    const { wallet, batches } = fakeWallet()
+    const custodian = other.address
+    let requestedCounts: number[] = []
+    const publicClient: any = {
+      predictEntityKeys: async ({ count }: { count: number }) => {
+        requestedCounts.push(count)
+        return Array.from({ length: count }, (_, i) => ({ key: `0x${(i + 1).toString(16).padStart(64, "0")}`, salt: BigInt(i + 1) }))
+      },
+    }
+    const log = new AgentLog({ wallet, publicClient, account: agent, agentId: "test-agent", runId: "r-cust", custodian, batchSize: 50 })
+    for (let i = 0; i < 45; i++) {
+      await log.record({ action: "tool.call", tool: `t${i}` })
+    }
+    await log.flush()
+    // batch of 45 items with MAX_OPS/2 = 20 yields 3 chunks (20, 20, 5)
+    assert.deepEqual(requestedCounts, [45])
+    assert.equal(batches.length, 3)
+    assert.equal(batches[0].creates[0].salt, 1n)
+    assert.equal(batches[1].creates[0].salt, 21n)
+    assert.equal(batches[2].creates[0].salt, 41n)
   })
 
   it("refuses an account that is not the wallet's", () => {
