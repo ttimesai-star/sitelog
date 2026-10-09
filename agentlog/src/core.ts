@@ -183,9 +183,20 @@ export async function verifyRun(entries: Entry[], opts: VerifyOptions = {}): Pro
   const report: RunReport = { format: FORMAT, agent_id: sorted[0]?.agent_id ?? "", run_id: sorted[0]?.run_id ?? "", signer, verdict: "empty", sealed: false, steps: 0, head: GENESIS, problems: [], checks: [] }
   if (!sorted.length) return report
 
+  // A step that is not a non-negative integer would never be visited by the walk below and would
+  // pass unseen; it is reported instead (review finding, Jules 09.10).
+  const valid = sorted.filter((e) => Number.isInteger(e.step) && e.step >= 0)
+  for (const e of sorted.filter((x) => !valid.includes(x))) {
+    report.checks.push({ step: Number(e.step), entry_hash: String(e.entry_hash), ok: false, problems: [`invalid step ${JSON.stringify(e.step)}`] })
+  }
+  if (!valid.length) {
+    report.problems.push("no entry has a valid step number")
+    report.verdict = "broken"
+    return report
+  }
   const byStep = new Map<number, Entry[]>()
-  for (const e of sorted) byStep.set(e.step, [...(byStep.get(e.step) ?? []), e])
-  const maxStep = sorted[sorted.length - 1].step
+  for (const e of valid) byStep.set(e.step, [...(byStep.get(e.step) ?? []), e])
+  const maxStep = valid[valid.length - 1].step
 
   let prev: string = GENESIS
   let sealedAt = -1
@@ -266,11 +277,13 @@ export interface ExportBundle {
 /** Re-verifies an export offline: hashes, signatures, links, and the recorded $creator of each entry. */
 export async function verifyExport(bundle: ExportBundle): Promise<RunReport> {
   if (!bundle || bundle.format !== "agentlog-export/v1" || !Array.isArray(bundle.entries)) throw new Error("not an agentlog-export/v1 file")
+  // An export read from Arkiv records the $creator of every entry. If any entry has one, all are checked,
+  // so deleting the field from some entries cannot switch the check off.
   const creators = new Map<string, string>()
   const withCreator = bundle.entries.filter((x) => x.creator)
   for (const x of withCreator) creators.set(String(x.entry.entry_hash).toLowerCase(), String(x.creator))
   return verifyRun(
     bundle.entries.map((x) => x.entry),
-    { signer: bundle.signer, creators: withCreator.length === bundle.entries.length && withCreator.length ? creators : undefined },
+    { signer: bundle.signer, creators: withCreator.length ? creators : undefined },
   )
 }

@@ -205,8 +205,13 @@ $("vfile").addEventListener("change", async (ev) => {
     const b = JSON.parse(await f.text())
     const r = await verifyExport(b)
     const [cls, word, text] = verdictText[r.verdict]
+    // An export proves "this wallet signed this chain". Whether that wallet is the agent you audit is
+    // a separate question: compare it with the wallet the operator published.
+    const who = String(r.signer).toLowerCase() === state.signer.toLowerCase()
+      ? `<div class="oktext small">Signer matches the agent wallet loaded above (${esc(short(state.signer))}).</div>`
+      : `<div class="badtext small">Signer ${esc(r.signer)} is not the agent wallet loaded above (${esc(state.signer)}): the file is consistent, but check that this is the wallet you expect.</div>`
     $("vout").innerHTML = `<div class="verdict ${cls}"><b>${word}</b> ${esc(text)}. ${r.steps} steps, signer ${esc(short(r.signer))}, head <code>${esc(short(r.head, 12))}</code>, exported ${esc(b.exported_at)} at block ${esc(b.source?.at_block ?? "?")}.
-      ${r.problems.length ? `<ul>${r.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}${b.foreign?.length ? `<div class="muted">${b.foreign.length} forged record(s) in the file are listed apart and never part of the chain.</div>` : ""}</div>`
+      ${r.problems.length ? `<ul>${r.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}${b.foreign?.length ? `<div class="muted">${b.foreign.length} forged record(s) in the file are listed apart and never part of the chain.</div>` : ""}${who}</div>`
   } catch (e) {
     $("vout").innerHTML = `<div class="verdict bad">Not a valid export: ${esc(e.message)}</div>`
   }

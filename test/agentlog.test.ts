@@ -232,3 +232,67 @@ describe("evidence snapshots", () => {
     assert.equal(await hashValue(l.raw!.input), l.entry.input_hash)
   })
 })
+
+describe("review fixes (Jules, 9 Oct)", () => {
+  it("reports entries whose step is negative or fractional instead of skipping them", async () => {
+    const es = await chain(3)
+    const odd = await buildEntry({ ...es[1], step: 1, timestamp: es[1].timestamp }, agent)
+    const bad1 = { ...odd, step: 1.5 }
+    const bad2 = { ...odd, step: -1 }
+    const r = await verifyRun([...es, bad1 as Entry, bad2 as Entry])
+    assert.equal(r.verdict, "broken")
+    assert.equal(r.checks.filter((c) => /invalid step/.test(c.problems.join())).length, 2)
+  })
+
+  it("checks $creator in an export even when some entries lost the field", async () => {
+    const es = await chain(3)
+    const bundle: ExportBundle = {
+      format: "agentlog-export/v1", exported_at: "", source: null, agent_id: "test-agent", run_id: "r1", signer: agent.address.toLowerCase(),
+      entries: es.map((entry) => ({ creator: agent.address.toLowerCase(), entry })), foreign: [], report: await verifyRun(es),
+    }
+    bundle.entries[1].creator = other.address.toLowerCase()
+    delete bundle.entries[2].creator
+    const r = await verifyExport(bundle)
+    assert.equal(r.verdict, "broken")
+    assert.match(r.checks[1].problems.join(), /\$creator/)
+  })
+
+  it("keeps entries queued when a transaction fails and retries them in order", async () => {
+    const { wallet, batches } = fakeWallet()
+    let fail = true
+    const real = wallet.executeBatch
+    wallet.executeBatch = async (b: any) => {
+      if (fail) {
+        fail = false
+        throw new Error("rpc down")
+      }
+      return real(b)
+    }
+    const log = new AgentLog({ wallet, account: agent, agentId: "test-agent", runId: "r6" })
+    await assert.rejects(log.start(null), /rpc down/)
+    await log.record({ action: "tool.call", tool: "t" })
+    assert.equal(batches[0].creates.length, 2) // step 0 retried together with step 1
+    assert.ok(log.entries.every((l) => l.entity_key))
+  })
+
+  it("does not log a write failure as a tool error", async () => {
+    const { wallet } = fakeWallet()
+    const log = new AgentLog({ wallet, account: agent, agentId: "test-agent", runId: "r7" })
+    await log.start(null)
+    wallet.executeBatch = async () => {
+      throw new Error("rpc down")
+    }
+    const tool = log.wrap("t", async () => 42)
+    await assert.rejects(tool(), /rpc down/)
+    assert.deepEqual(log.entries.map((l) => l.entry.action), ["run.start", "tool.call"])
+  })
+
+  it("extends steps written by earlier processes when a resumed run is sealed", async () => {
+    const es = await chain(3, agent, false)
+    const prior = [`0x${"a".repeat(64)}`, `0x${"b".repeat(64)}`, `0x${"c".repeat(64)}`] as `0x${string}`[]
+    const { wallet, batches } = fakeWallet()
+    const log = new AgentLog({ wallet, account: agent, agentId: "test-agent", runId: "r1", resume: { ...resumeState(es), keys: prior } })
+    await log.seal()
+    assert.deepEqual(batches[0].extensions.map((x: any) => x.entityKey), prior)
+  })
+})

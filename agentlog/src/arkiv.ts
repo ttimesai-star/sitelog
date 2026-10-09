@@ -73,7 +73,7 @@ export interface AgentLogOptions {
   /** Keep raw inputs and outputs in memory for a local evidence file (never sent to Arkiv). */
   keepRaw?: boolean
   /** Continue a run another process started (see resumeState). */
-  resume?: { step: number; prev: Hex }
+  resume?: { step: number; prev: Hex; keys?: Hex[] }
 }
 
 export interface Landed {
@@ -98,6 +98,7 @@ export class AgentLog {
   private step = 0
   private prev: Hex = GENESIS
   private queue: Promise<unknown> = Promise.resolve()
+  private priorKeys: Hex[] = []
   sealed = false
   txs: Hex[] = []
 
@@ -110,6 +111,8 @@ export class AgentLog {
     if (resume) {
       this.step = resume.step
       this.prev = resume.prev
+      // Entities written by earlier processes: the seal extends them to audit retention too.
+      this.priorKeys = [...(resume.keys ?? [])]
     }
   }
 
@@ -147,14 +150,16 @@ export class AgentLog {
   /** Wraps a tool so every call is logged with the hash of its arguments and of its result (or error). */
   wrap<A extends unknown[], R>(tool: string, fn: (...args: A) => Promise<R> | R, note?: (...args: A) => string) {
     return async (...args: A): Promise<R> => {
+      let out: R
       try {
-        const out = await fn(...args)
-        await this.record({ action: "tool.call", tool, input: args, output: out, note: note?.(...args) })
-        return out
+        out = await fn(...args)
       } catch (err) {
         await this.record({ action: "tool.error", tool, input: args, output: { error: String((err as Error)?.message ?? err) }, note: note?.(...args) })
         throw err
       }
+      // Outside the try: a failure to write the log is not a tool error and must not be logged as one.
+      await this.record({ action: "tool.call", tool, input: args, output: out, note: note?.(...args) })
+      return out
     }
   }
 
@@ -165,6 +170,18 @@ export class AgentLog {
   private async flushNow(extraExtensions: Hex[] = [], days = this.opts.stepDays) {
     const batch = this.pending.splice(0)
     if (!batch.length && !extraExtensions.length) return
+    // If a transaction fails, the entries it carried go back to the queue, so the next flush retries
+    // them in order instead of leaving a gap in the chain (review finding, Jules 09.10).
+    const done = new Set<Landed>()
+    try {
+      await this.sendBatch(batch, extraExtensions, days, done)
+    } catch (err) {
+      this.pending.unshift(...batch.filter((l) => !done.has(l)))
+      throw err
+    }
+  }
+
+  private async sendBatch(batch: Landed[], extraExtensions: Hex[], days: number, done: Set<Landed>) {
     const { wallet, custodian, publicClient } = this.opts
     if (custodian && !publicClient) throw new Error("custodian needs publicClient (to predict entity keys)")
     // Creates first, then (optionally) the ownership transfer of the very keys they mint.
@@ -181,6 +198,7 @@ export class AgentLog {
       r.createdEntities.forEach((k, i) => {
         part[i].entity_key = k
         part[i].tx = r.txHash
+        done.add(part[i])
       })
       this.txs.push(r.txHash)
     }
@@ -198,7 +216,7 @@ export class AgentLog {
   seal(output: unknown = null, note = "run sealed") {
     return this.serial(async () => {
       if (this.sealed) throw new Error("already sealed")
-      const earlier = () => this.entries.filter((l) => l.entity_key).map((l) => l.entity_key as Hex)
+      const earlier = () => [...this.priorKeys, ...this.entries.filter((l) => l.entity_key).map((l) => l.entity_key as Hex)]
       const input = { steps: this.step, head: this.prev }
       const entry = await buildEntry(
         { agent_id: this.opts.agentId, run_id: this.opts.runId, step: this.step, action: ACTION_END, tool: "", input_hash: await hashValue(input), output_hash: await hashValue(output), prev_entry_hash: this.prev, note },
@@ -214,33 +232,43 @@ export class AgentLog {
       const pendingNow = new Set(this.pending)
       const ext = earlier().filter((k) => !this.pending.some((p) => p.entity_key === k))
       if (!this.opts.custodian && this.pending.length + ext.length <= MAX_OPS) {
-        const creates = this.pending.splice(0).map((l) => entryParams(l.entry, this.opts.sealedDays))
-        const extensions = ext.map((entityKey) => ({ entityKey, expires: ExpirationTime.fromDays(this.opts.sealedDays) }))
-        let r
         try {
-          r = await this.opts.wallet.executeBatch({ creates, extensions })
+          await this.sealBatch(pendingNow, ext)
         } catch (err) {
-          // An extension reverts when an auditor already pushed that entry further out (extendEntity
-          // sets the expiry and refuses to shorten it). The seal matters more: land it alone, then
-          // extend what still can be extended, one entry at a time.
-          if (!extensions.length) throw err
-          r = await this.opts.wallet.executeBatch({ creates })
-          for (const x of extensions) {
-            try {
-              this.txs.push((await this.opts.wallet.executeBatch({ extensions: [x] })).txHash)
-            } catch {}
-          }
+          // Nothing landed: the entries go back to the queue, and flush() retries them.
+          this.pending.unshift(...[...pendingNow].filter((l) => !l.entity_key))
+          throw err
         }
-        ;[...pendingNow].forEach((l, i) => {
-          l.entity_key = r.createdEntities[i]
-          l.tx = r.txHash
-        })
-        this.txs.push(r.txHash)
       } else {
         await this.flushNow(ext, this.opts.sealedDays)
       }
       return landed
     })
+  }
+
+  private async sealBatch(pendingNow: Set<Landed>, ext: Hex[]) {
+    const creates = this.pending.splice(0).map((l) => entryParams(l.entry, this.opts.sealedDays))
+    const extensions = ext.map((entityKey) => ({ entityKey, expires: ExpirationTime.fromDays(this.opts.sealedDays) }))
+    let r
+    try {
+      r = await this.opts.wallet.executeBatch({ creates, extensions })
+    } catch (err) {
+      // An extension reverts when an auditor already pushed that entry further out (extendEntity
+      // sets the expiry and refuses to shorten it). The seal matters more: land it alone, then
+      // extend what still can be extended, one entry at a time.
+      if (!extensions.length) throw err
+      r = await this.opts.wallet.executeBatch({ creates })
+      for (const x of extensions) {
+        try {
+          this.txs.push((await this.opts.wallet.executeBatch({ extensions: [x] })).txHash)
+        } catch {}
+      }
+    }
+    ;[...pendingNow].forEach((l, i) => {
+      l.entity_key = r.createdEntities[i]
+      l.tx = r.txHash
+    })
+    this.txs.push(r.txHash)
   }
 
   /** Local evidence: entries with entity keys and raw inputs/outputs. Keep it private if inputs are. */
