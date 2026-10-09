@@ -41,7 +41,7 @@ Any HTTP client can query the public RPC directly. Verified remarks of the demo 
 ```bash
 curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: application/json' --data '{
   "jsonrpc":"2.0","id":1,"method":"arkiv_query",
-  "params":["app = str('"'"'sitelog'"'"') AND kind = str('"'"'remark'"'"') AND project = str('"'"'demo-1'"'"') AND severity >= i32(3) AND $creator = addr(0x6BEa8012E15605564cc67Bad1F8941262cC68f69)",
+  "params":["app = str(\"sitelog\") AND kind = str(\"remark\") AND project = str(\"demo-1\") AND severity >= i32(3) AND $creator = addr(0x6BEa8012E15605564cc67Bad1F8941262cC68f69)",
             {"select":{"key":true,"creator":true,"expiresAt":true,"attributes":true,"payload":true}}]}'
 ```
 
@@ -55,6 +55,7 @@ Requirements: Node.js 22 or newer.
 git clone https://github.com/ttimesai-star/sitelog
 cd sitelog
 npm install
+npm test             # run unit tests (Node.js test runner)
 npm run dev          # web app on http://localhost:5173/sitelog/
 ```
 

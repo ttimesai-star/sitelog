@@ -9,7 +9,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "sitelog": "node scripts/sitelog.mjs"
+    "sitelog": "node scripts/sitelog.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@arkiv-network/sdk": "^0.8.1",

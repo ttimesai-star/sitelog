@@ -11,7 +11,7 @@ import {
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])
 const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "")
-const addrLink = (a) => `<a href="${EXPLORER}/address/${a}" target="_blank" rel="noopener" title="${a}">${short(a)}</a>`
+const addrLink = (a) => `<a href="${EXPLORER}/address/${esc(a)}" target="_blank" rel="noopener" title="${esc(a)}">${esc(short(a))}</a>`
 
 const pub = createPublicClient({ chain: tiramisu, transport: http(RPC_HTTP) })
 let state = { journal: null, head: 0n, me: null, wallet: null }
