@@ -47,7 +47,7 @@ curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: ap
             {"select":{"key":true,"creator":true,"expiresAt":true,"attributes":true,"payload":true}}]}'
 ```
 
-The live page shows the exact query it just ran for the current filters, with a copy button.
+Runs as is in bash or zsh (the `'"'"'` sequences put single quotes inside the single-quoted JSON; the query language only accepts single-quoted strings, see friction F3). The live page shows the exact query it just ran for the current filters, with a copy button.
 
 ## Try it in five minutes (for judges)
 
@@ -69,6 +69,7 @@ Requirements: Node.js 22 or newer.
 git clone https://github.com/ttimesai-star/sitelog
 cd sitelog
 npm install
+npm test             # unit tests: trust rules, lease arithmetic, query rendering (Node test runner, no network)
 npm run dev          # web app on http://localhost:5173/sitelog/
 ```
 

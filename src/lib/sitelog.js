@@ -10,7 +10,7 @@
 import { addr, i32, key, str, u64 } from "@arkiv-network/sdk/attr"
 import { and, eq, gte, lte, not, or } from "@arkiv-network/sdk/query"
 import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk/utils"
-import { parseAbiItem } from "viem"
+import { isAddress, parseAbiItem } from "viem"
 
 export const APP = "sitelog"
 export const SCHEMA_VERSION = 1
@@ -110,13 +110,41 @@ export function closeBatch({ project, remarkKey, fixKey, text }) {
 // Activity lease: a fix claim on an open remark renews the remark for another 90 days in the same
 // transaction. extendEntity sets (not adds) the expiry and reverts if the new one is not later,
 // so the caller passes the remark's current expiry and we skip the extension when it would revert.
+// The decision and the extension use the same unit, an absolute block (ExpirationTime.atBlock),
+// so "renew only if it moves the expiry later" is exact and the batch cannot revert on it.
 export function fixBatch({ project, remarkKey, text, photoSha256, remarkExpiresAtBlock, headBlock }) {
+  if (headBlock === undefined || headBlock === null) throw new Error("fixBatch needs headBlock (the current block number)")
   const batch = { creates: [fixParams({ project, remarkKey, text, photoSha256 })] }
   const renewTo = BigInt(headBlock) + BigInt((LIFETIME_DAYS.remark * 86400) / BLOCK_TIME_S)
-  if (remarkExpiresAtBlock === undefined || renewTo > BigInt(remarkExpiresAtBlock)) {
-    batch.extensions = [{ entityKey: remarkKey, expires: ExpirationTime.fromDays(LIFETIME_DAYS.remark) }]
+  if (remarkExpiresAtBlock === undefined || remarkExpiresAtBlock === null || renewTo > BigInt(remarkExpiresAtBlock)) {
+    batch.extensions = [{ entityKey: remarkKey, expires: ExpirationTime.atBlock(renewTo) }]
   }
   return batch
+}
+
+// ---------- input checks (SEC-02, QUERY-02) ----------
+// The SDK already doubles quotes inside str(), so a hostile project id cannot change the query;
+// these checks give a clear error instead of an empty journal or a node-side type error.
+export const PROJECT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+export function checkProject(project) {
+  if (!PROJECT_RE.test(String(project || ""))) throw new Error("project id: 1-64 characters, letters, digits, dot, dash, underscore")
+  return project
+}
+export function checkAddress(a, what = "address") {
+  if (!isAddress(String(a || ""), { strict: false })) throw new Error(`${what} is not a valid 0x address`)
+  return a
+}
+function intIn(v, lo, hi, what) {
+  const n = Number(v)
+  if (!Number.isInteger(n) || n < lo || n > hi) throw new Error(`${what} must be an integer ${lo}..${hi}`)
+  return n
+}
+
+// RENT-03: a remark whose lease runs out disappears from queries, and its fix claims and closures
+// become orphans. The page flags remarks close to expiry so someone can extend them in time.
+export const EXPIRY_WARN_DAYS = 14
+export function daysLeft(expiresAt, headBlock) {
+  return (Number(BigInt(expiresAt) - BigInt(headBlock)) * BLOCK_TIME_S) / 86400
 }
 
 // ---------- reads ----------
@@ -131,7 +159,8 @@ export function attrValue(entity, name) {
 
 export function payloadJson(entity) {
   try {
-    return entity.toJson()
+    const p = entity.toJson()
+    return p && typeof p === "object" && !Array.isArray(p) ? p : {}
   } catch {
     return {}
   }
@@ -152,6 +181,8 @@ async function fetchAll(builder, atBlock, max = 2000) {
   return out
 }
 
+const addressList = (xs) => (Array.isArray(xs) ? xs : []).filter((x) => typeof x === "string" && isAddress(x, { strict: false })).map((x) => x.toLowerCase())
+
 // The roster counts only if the trust root created it. Latest one wins (client sorts: no server ordering).
 export async function loadRoles(client, { project, trustRoot, atBlock }) {
   atBlock ??= await client.getBlockNumber()
@@ -166,8 +197,8 @@ export async function loadRoles(client, { project, trustRoot, atBlock }) {
   return {
     entity: latest,
     title: p.title || project,
-    inspectors: (p.inspectors || []).map((x) => x.toLowerCase()),
-    contractors: (p.contractors || []).map((x) => x.toLowerCase()),
+    inspectors: addressList(p.inspectors),
+    contractors: addressList(p.contractors),
   }
 }
 
@@ -180,6 +211,11 @@ export function creatorRole(roles, creator) {
 }
 
 function remarkPreds({ project, minSeverity = 1, maxSeverity = 5, sinceTs, untilTs }) {
+  checkProject(project)
+  minSeverity = intIn(minSeverity, 1, 5, "minSeverity")
+  maxSeverity = intIn(maxSeverity, 1, 5, "maxSeverity")
+  if (sinceTs !== undefined) sinceTs = intIn(sinceTs, 0, 2 ** 40, "sinceTs")
+  if (untilTs !== undefined) untilTs = intIn(untilTs, 0, 2 ** 40, "untilTs")
   const preds = [eq("app", APP), eq("kind", "remark"), eq("project", project), gte("severity", i32(minSeverity)), lte("severity", i32(maxSeverity))]
   if (sinceTs) preds.push(gte("created_ts", u64(sinceTs)))
   if (untilTs) preds.push(lte("created_ts", u64(untilTs)))
@@ -210,7 +246,7 @@ function linkedQuery(client, { project, remarkKeys }) {
     .limit(200)
 }
 
-function withStatus(remarkEntities, linked, roles) {
+export function withStatus(remarkEntities, linked, roles) {
   const fixes = linked.filter((e) => attrValue(e, "kind") === "fix")
   // A closure counts only when an inspector created it; a contractor "closing" its own defect is ignored.
   const closures = linked.filter((e) => attrValue(e, "kind") === "closure")
@@ -218,7 +254,7 @@ function withStatus(remarkEntities, linked, roles) {
     const k = e.key.toLowerCase()
     const myFixes = fixes.filter((f) => String(attrValue(f, "remark")).toLowerCase() === k)
     const myClosures = closures.filter((c) => String(attrValue(c, "remark")).toLowerCase() === k)
-    const validClosure = myClosures.find((c) => creatorRole(roles, c.creator) === "inspector")
+    const validClosure = myClosures.filter((c) => creatorRole(roles, c.creator) === "inspector").sort(newestFirst)[0]
     const fakeClosures = myClosures.filter((c) => creatorRole(roles, c.creator) !== "inspector")
     return { entity: e, fixes: myFixes, closure: validClosure, fakeClosures, status: validClosure ? "closed" : myFixes.length ? "fix-claimed" : "open" }
   })
@@ -252,6 +288,29 @@ export async function loadJournal(client, { project, trustRoot, minSeverity = 1,
   const forged = await fetchAll(unverifiedRemarksQuery(client, f), atBlock)
   const remarks = (await statusesFor(client, { project, roles, entities: verified, atBlock })).sort(newestFirst)
   return { roles, remarks, forged, atBlock }
+}
+
+// RENT-03: fix claims and closures whose remark no longer exists (expired or deleted by its owner).
+// One query for the project's linked records, then a getEntity only for keys not seen in the journal.
+export async function loadOrphans(client, { project, known = [], atBlock }) {
+  atBlock ??= await client.getBlockNumber()
+  const linked = await fetchAll(client.select(FULL).where(eq("app", APP), eq("project", checkProject(project)), or(eq("kind", "fix"), eq("kind", "closure"))).limit(200), atBlock)
+  const seen = new Set(known.map((k) => k.toLowerCase()))
+  const missing = new Map()
+  for (const e of linked) {
+    const k = String(attrValue(e, "remark")).toLowerCase()
+    if (seen.has(k)) continue
+    if (!missing.has(k)) {
+      let gone = false
+      try {
+        await client.getEntity(k)
+      } catch {
+        gone = true
+      }
+      missing.set(k, gone)
+    }
+  }
+  return linked.filter((e) => missing.get(String(attrValue(e, "remark")).toLowerCase()) === true)
 }
 
 // One page of the journal (web app). `cursor` comes from the previous page; the walk stays on

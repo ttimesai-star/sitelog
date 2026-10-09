@@ -123,6 +123,7 @@ What it does not protect, stated plainly:
 
 - **The owner can still delete.** `readonly` blocks edits, not deletion: the inspector who owns a remark can delete it. The deletion is visible (an `EntityDeleted` event) and the creation transaction stays on the explorer, so the record's existence and content can still be proven from chain history. A production version would transfer each remark's ownership to the client in the same batch, so that neither the inspector nor the contractor alone can remove it; the demo keeps the inspector as owner.
 - **The roster is a single point of trust.** If the client lets the roster expire or deletes it, no remark on the project shows as verified any more. The roster lives 365 days and the client re-publishes it when people change.
+- **An open remark that nobody renews expires.** After 90 days without activity it disappears from queries, and its fix claims or closures point at a key that no longer exists. The page marks open remarks with less than 14 days left ("expires in N days", with a keep-alive shortcut), and `node scripts/sitelog.mjs journal --orphans` lists linked records whose remark is gone. The creation transaction stays on the explorer either way.
 - **Fix claims and closures are not permissionless.** Only their owners can extend them. A closure lives 365 days from the moment it is written, which covers the warranty period of the demo.
 
 ## What stays off Arkiv on purpose

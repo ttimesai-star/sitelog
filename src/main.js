@@ -4,7 +4,7 @@ import { toRpcSelect } from "@arkiv-network/sdk/query"
 import { ExpirationTime } from "@arkiv-network/sdk/utils"
 import { custom, http, webSocket } from "viem"
 import {
-  APP, DEMO_CLIENT, DEMO_PROJECT, EXPLORER, RPC_HTTP, RPC_WS, SEVERITY, attrValue, blocksToDate, closeBatch, creationTxs, creatorRole,
+  APP, DEMO_CLIENT, DEMO_PROJECT, EXPIRY_WARN_DAYS, EXPLORER, RPC_HTTP, RPC_WS, SEVERITY, attrValue, blocksToDate, checkAddress, checkProject, closeBatch, creationTxs, creatorRole, daysLeft,
   fixBatch, loadJournalPage, loadRoles, loadUnverified, payloadJson, remarkParams, sha256Hex, verifiedRemarksQuery,
 } from "./lib/sitelog.js"
 
@@ -14,9 +14,11 @@ const CHAIN_ID_HEX = "0x7614d1" // 7738577, Tiramisu
 const $ = (id) => document.getElementById(id)
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c])
 const short = (a) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "")
-const addrLink = (a) => `<a href="${EXPLORER}/address/${a}" target="_blank" rel="noopener" title="${a}">${short(a)}</a>`
-const entityLink = (k, label) => `<a href="${EXPLORER}/entity/${k}" target="_blank" rel="noopener" title="entity ${k}">${label || "entity " + short(k)}</a>`
-const txLink = (h, label = "tx") => (h ? `<a href="${EXPLORER}/tx/${h}" target="_blank" rel="noopener" title="${h}">${label} ${short(h)}</a>` : "")
+// SEC-01: addresses and keys come from chain data (a roster payload is free text), so every value is
+// escaped, and URL parts are also URI-encoded.
+const addrLink = (a) => `<a href="${EXPLORER}/address/${encodeURIComponent(a ?? "")}" target="_blank" rel="noopener" title="${esc(a)}">${esc(short(a))}</a>`
+const entityLink = (k, label) => `<a href="${EXPLORER}/entity/${encodeURIComponent(k ?? "")}" target="_blank" rel="noopener" title="entity ${esc(k)}">${label ? esc(label) : "entity " + esc(short(k))}</a>`
+const txLink = (h, label = "tx") => (h ? `<a href="${EXPLORER}/tx/${encodeURIComponent(h)}" target="_blank" rel="noopener" title="${esc(h)}">${esc(label)} ${esc(short(h))}</a>` : "")
 
 // Few retries: on HTTP 429 (quota) waiting longer does not help, the quota resets hourly.
 const pub = createPublicClient({ chain: tiramisu, transport: http(RPC_HTTP, { retryCount: 1 }) })
@@ -67,20 +69,24 @@ function remarkCard(r) {
   const sev = attrValue(e, "severity")
   const created = new Date(Number(attrValue(e, "created_ts")) * 1000)
   const exp = blocksToDate(e.expiresAt, state.atBlock)
+  const left = daysLeft(e.expiresAt, state.atBlock)
+  const expiring = r.status !== "closed" && left < EXPIRY_WARN_DAYS
+    ? ` <span class="badge expiring" title="When the lease runs out the remark disappears from queries">expires in ${Math.max(0, left).toFixed(1)} days</span> <button class="ghost tiny" data-keep="${esc(e.key)}">keep alive</button>`
+    : ""
   const fixes = r.fixes.map((f) => linkLine(f, `fix claim: "${esc(payloadJson(f).text)}"`)).join("")
   const closure = r.closure ? linkLine(r.closure, `closed: "${esc(payloadJson(r.closure).text)}"`, "ok") : ""
   const fake = r.fakeClosures.map((c) => linkLine(c, `<b>ignored</b> "closure" (not an inspector): "${esc(payloadJson(c).text)}"`, "bad")).join("")
-  return `<article class="remark sev${sev}">
-    <div class="rhead"><span class="vbadge ok" title="$creator ${e.creator} is an inspector in the client's roster">verified</span> ${statusBadge(r.status)} <span class="sev">sev ${sev} · ${SEVERITY[sev]}</span> <span class="muted">${esc(attrValue(e, "section"))} · ${created.toISOString().slice(0, 16).replace("T", " ")} UTC</span></div>
+  return `<article class="remark sev${Number(sev) || 0}">
+    <div class="rhead"><span class="vbadge ok" title="$creator ${e.creator} is an inspector in the client's roster">verified</span> ${statusBadge(r.status)}${expiring} <span class="sev">sev ${esc(sev)} · ${esc(SEVERITY[sev])}</span> <span class="muted">${esc(attrValue(e, "section"))} · ${created.toISOString().slice(0, 16).replace("T", " ")} UTC</span></div>
     <p class="rtext">${esc(p.text)}</p>
     <div class="meta">
       ${p.location ? `<span>at ${esc(p.location)}</span>` : ""}${p.norm_ref ? `<span>norm: ${esc(p.norm_ref)}</span>` : ""}
       <span>inspector ${addrLink(e.creator)}</span>
       <span>${entityLink(e.key)} · ${txLink(state.txs.get(e.key.toLowerCase()), "created in tx") || "tx…"}</span>
       <span>readonly ${e.creationFlags?.readonly ? "yes" : "no"} · anyone may extend ${e.creationFlags?.permissionlessExtension ? "yes" : "no"} · expires ≈ ${exp.toISOString().slice(0, 10)}</span>
-      <span class="k"><button class="ghost tiny" data-copy="${e.key}" title="${e.key}">copy key</button></span>
+      <span class="k"><button class="ghost tiny" data-copy="${esc(e.key)}" title="${esc(e.key)}">copy key</button></span>
     </div>
-    ${p.photo_sha256 ? `<div class="photo">photo SHA-256 <code>${p.photo_sha256.slice(0, 16)}…</code> <label class="ghost tiny">check a photo <input type="file" data-hash="${p.photo_sha256}" hidden /></label><span class="photoRes"></span></div>` : ""}
+    ${p.photo_sha256 ? `<div class="photo">photo SHA-256 <code>${p.photo_sha256.slice(0, 16)}…</code> <label class="ghost tiny">check a photo <input type="file" data-hash="${esc(p.photo_sha256)}" hidden /></label><span class="photoRes"></span></div>` : ""}
     <ul class="links">${fixes}${closure}${fake}</ul>
   </article>`
 }
@@ -88,7 +94,7 @@ function remarkCard(r) {
 function forgedCard(e) {
   const role = creatorRole(state.roles, e.creator)
   const p = payloadJson(e)
-  return `<div class="forged"><span class="vbadge bad">forged</span> <span class="sev">sev ${attrValue(e, "severity")}</span> "${esc(p.text)}"
+  return `<div class="forged"><span class="vbadge bad">forged</span> <span class="sev">sev ${esc(attrValue(e, "severity"))}</span> "${esc(p.text)}"
     <div class="meta"><span>written by ${addrLink(e.creator)} <span class="role ${role}">${role}</span>, not an inspector</span><span>${entityLink(e.key)} · ${txLink(state.txs.get(e.key.toLowerCase()), "created in tx")}</span></div></div>`
 }
 
@@ -112,7 +118,7 @@ function renderJournal() {
     ? `<div class="tile"><b>${state.remarks.length}${more}</b><span>verified remarks</span></div>
        <div class="tile"><b>${count("open")}</b><span>open</span></div>
        <div class="tile"><b>${count("closed")}</b><span>closed by an inspector</span></div>
-       <div class="tile bad"><b>${state.forged.length}</b><span>forged records ignored</span></div>`
+       <div class="tile bad"><b>${state.forged.length + state.remarks.reduce((n, r) => n + r.fakeClosures.length, 0)}</b><span>forged records ignored</span></div>`
     : ""
   $("stats").innerHTML = state.roles
     ? `<span>${state.remarks.length} loaded${state.cursor ? ", more on Arkiv" : ""}</span><span>${count("fix-claimed")} fix claimed</span><span class="muted">snapshot at block ${state.atBlock}</span>`
@@ -138,6 +144,14 @@ const pageEntities = (remarks) => remarks.flatMap((r) => [r.entity, ...r.fixes, 
 
 async function load() {
   const f = filters()
+  try {
+    checkProject(f.project)
+    checkAddress(f.trustRoot, "client wallet")
+  } catch (err) {
+    $("roles").innerHTML = `<span class="badtext">${esc(err.message)}</span>`
+    $("journal").innerHTML = ""
+    return
+  }
   history.replaceState(null, "", `?project=${encodeURIComponent(f.project)}${f.trustRoot.toLowerCase() !== DEMO_CLIENT.toLowerCase() ? "&client=" + encodeURIComponent(f.trustRoot) : ""}`)
   document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c.dataset.project === f.project))
   $("journal").innerHTML = `<p class="muted">Querying Arkiv…</p>`
@@ -183,6 +197,12 @@ async function loadMore() {
 }
 
 document.addEventListener("click", (ev) => {
+  const keep = ev.target.closest("[data-keep]")
+  if (keep) {
+    $("kRemark").value = keep.dataset.keep
+    document.querySelector("#writeForms details:last-of-type").open = true
+    $("connect").scrollIntoView({ behavior: "smooth", block: "center" })
+  }
   const c = ev.target.closest("[data-copy]")
   if (c) navigator.clipboard?.writeText(c.dataset.copy)
   const chip = ev.target.closest(".chip")
@@ -224,13 +244,30 @@ function onOurEvent() {
   }
 }
 
+let liveRetry = 0
+let liveTimer
+let unwatchLive
+function restartLive(reason) {
+  try {
+    unwatchLive?.()
+  } catch {}
+  unwatchLive = undefined
+  const delay = Math.min(60, 2 ** liveRetry) * 1000
+  liveRetry += 1
+  $("liveText").textContent = `${reason}; reconnecting in ${delay / 1000} s`
+  $("live").classList.remove("on")
+  clearTimeout(liveTimer)
+  liveTimer = setTimeout(startLive, delay)
+}
+
 function startLive() {
   try {
-    const ws = createPublicClient({ chain: tiramisu, transport: webSocket(RPC_WS) })
+    const ws = createPublicClient({ chain: tiramisu, transport: webSocket(RPC_WS, { reconnect: { attempts: 5, delay: 2000 } }) })
     const tracked = () =>
       new Set([...pageEntities(state.remarks), ...state.forged, ...(state.roles ? [state.roles.entity] : [])].map((e) => e.key.toLowerCase()))
-    ws.watchEntityEvents({
+    unwatchLive = ws.watchEntityEvents({
       onEvent: async (ev) => {
+        liveRetry = 0
         $("liveText").textContent = "live"
         $("live").classList.add("on")
         // Events carry no attributes. Looking up every new entity on a shared chain would burn the
@@ -253,16 +290,21 @@ function startLive() {
         while (list.children.length > 30) list.lastElementChild.remove()
         onOurEvent()
       },
-      onError: (e) => {
-        $("liveText").textContent = "socket error: " + (e.shortMessage || e.message).slice(0, 60)
-        $("live").classList.remove("on")
-      },
+      onError: (e) => restartLive("socket error: " + (e.shortMessage || e.message || "").slice(0, 40)),
     })
     $("liveText").textContent = "listening"
   } catch (e) {
-    $("liveText").textContent = "no WebSocket"
+    restartLive("no WebSocket")
   }
 }
+document.addEventListener("visibilitychange", () => {
+  // Phones and laptops drop sockets while asleep; come back with a fresh subscription.
+  if (document.visibilityState === "visible" && !$("live").classList.contains("on")) {
+    liveRetry = 0
+    clearTimeout(liveTimer)
+    startLive()
+  }
+})
 
 // ---------- writes with the visitor's own wallet (EIP-1193: MetaMask, Rabby, ...) ----------
 function logw(s) {
@@ -308,9 +350,16 @@ async function connect() {
     if (!eth._sitelogListeners && eth.on) {
       eth._sitelogListeners = true
       eth.on("accountsChanged", (accs) => (accs[0] ? connect() : $("writeForms").classList.add("hidden")))
-      eth.on("chainChanged", () => connect())
+      eth.on("chainChanged", (id) => {
+        if (String(id).toLowerCase() !== CHAIN_ID_HEX) {
+          $("writeForms").classList.add("hidden")
+          $("me").innerHTML = `<span class="badtext">Wallet switched to chain ${esc(id)}: writing is disabled. Press Connect wallet to return to Tiramisu.</span>`
+        } else connect()
+      })
     }
   } catch (e) {
+    $("writeForms").classList.add("hidden")
+    $("me").innerHTML = `<span class="badtext">Not connected to Tiramisu: writing is disabled.</span>`
     logw("connect failed: " + esc(e.shortMessage || e.message))
   }
 }
@@ -324,6 +373,12 @@ async function fileHash(id) {
 async function run(label, fn) {
   try {
     await ensureTiramisu(window.ethereum)
+  } catch (e) {
+    $("writeForms").classList.add("hidden")
+    $("me").innerHTML = `<span class="badtext">Wallet left Tiramisu: writing is disabled until you reconnect.</span>`
+    return logw(`${esc(label)} not sent: ${esc(e.shortMessage || e.message)}`)
+  }
+  try {
     logw(esc(label) + "… confirm in your wallet")
     const r = await fn()
     const created = r.createdEntities || (r.entityKey ? [r.entityKey] : [])

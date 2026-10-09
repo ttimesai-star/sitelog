@@ -95,3 +95,4 @@ details.adv { border-top: 1px solid var(--line); margin-top: 10px; }
 details.adv summary { font-weight: 500; font-size: 13px; color: var(--muted); }
 #newActivity { margin: 6px 0; }
 @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.badge.expiring { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }

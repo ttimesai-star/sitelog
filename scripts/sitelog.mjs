@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SiteLog CLI: write and read the site journal on Arkiv (Tiramisu testnet) from a terminal.
 //
-//   node scripts/sitelog.mjs journal [--project demo-1] [--min 3]
+//   node scripts/sitelog.mjs journal [--project demo-1] [--min 3] [--orphans]
 //   node scripts/sitelog.mjs roles   --inspectors 0x..,0x.. --contractors 0x.. [--title "..."]
 //   node scripts/sitelog.mjs remark  --severity 4 --section concrete --text "..." [--photo file.jpg]
 //   node scripts/sitelog.mjs fix     --remark 0xKEY --text "..." [--photo file.jpg]
@@ -21,7 +21,7 @@ import { createHash } from "node:crypto"
 import { http } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import {
-  DEMO_CLIENT, DEMO_PROJECT, EXPLORER, SEVERITY, attrValue, blocksToDate, closeBatch, creatorRole, fixBatch, loadJournal,
+  DEMO_CLIENT, DEMO_PROJECT, EXPLORER, SEVERITY, attrValue, blocksToDate, closeBatch, creatorRole, fixBatch, loadJournal, loadOrphans,
   payloadJson, remarkParams, rolesParams,
 } from "../src/lib/sitelog.js"
 
@@ -105,6 +105,13 @@ async function main() {
         for (const c of r.fakeClosures) console.log(`   IGNORED closure by ${c.creator} (${creatorRole(j.roles, c.creator)}): not an inspector`)
       }
       for (const f of j.forged) console.log(`UNVERIFIED remark ${f.key} by ${f.creator} (${creatorRole(j.roles, f.creator)}): ${payloadJson(f).text}`)
+      if (opt.orphans) {
+        const known = [...j.remarks.map((r) => r.entity.key), ...j.forged.map((f) => f.key)]
+        const orphans = await loadOrphans(pub, { project, known, atBlock: j.atBlock })
+        console.log(`
+${orphans.length} fix claims or closures point at a remark that no longer exists (expired or deleted)`)
+        for (const o of orphans) console.log(`  ORPHAN ${attrValue(o, "kind")} ${o.key} by ${o.creator} -> remark ${attrValue(o, "remark")}: ${payloadJson(o).text}`)
+      }
       break
     }
     default:
