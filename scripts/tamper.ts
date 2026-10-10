@@ -15,5 +15,5 @@ const { local } = buildCtx({ dataDir: resolve(process.env.AGENTLOG_DATA ?? ".age
 const r = await tamperDemo(local, { mode: values.mode as TamperMode | undefined, step: values.step ? Number(values.step) : undefined, run_id: values.run })
 console.log(r.actor === "operator"
   ? `The operator ${r.what} in ${r.run_id}. Now ask: "who is right about the afternoon release, the client or the operator?"`
-  : `${r.what} in ${r.run_id}. Now ask: "what did my agent do yesterday, and has its log been tampered with?"`)
+  : `Attacker ${r.what} in ${r.run_id}. Now ask: "what did my agent do yesterday, and has its log been tampered with?"`)
 local.close()

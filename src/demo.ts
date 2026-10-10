@@ -110,19 +110,19 @@ export async function tamperDemo(store: SqliteStore, q: { run_id?: string; step?
   if (!row) throw new Error(`run ${runId} has no step ${step}`)
   const e = JSON.parse(row.body) as Entry
   const fakeOutput = { status: 200, body: "ok" }
+  const rawObj = row.raw ? JSON.parse(row.raw) : {}
   if (mode === "evidence") {
-    const raw = row.raw ? JSON.parse(row.raw) : {}
-    store.db.prepare("UPDATE entries SET raw = ? WHERE agent_id = ? AND run_id = ? AND step = ?").run(JSON.stringify({ ...raw, output: fakeOutput }), DEMO_AGENT, runId, step)
+    store.db.prepare("UPDATE entries SET raw = ? WHERE agent_id = ? AND run_id = ? AND step = ?").run(JSON.stringify({ ...rawObj, output: fakeOutput }), DEMO_AGENT, runId, step)
     return { tampered: true, mode, actor: "operator", agent_id: DEMO_AGENT, run_id: runId, step, what: `rewrote its own evidence for step ${step}: staging health 503 -> 200 (the signed chain is untouched)` }
   } else if (mode === "delete") {
     store.db.prepare("DELETE FROM entries WHERE agent_id = ? AND run_id = ? AND step = ?").run(DEMO_AGENT, runId, step)
   } else if (mode === "forge") {
     const intruder = privateKeyToAccount(generatePrivateKey())
     const forged = await buildEntry({ ...e, output_hash: await hashValue(fakeOutput), note: "GET staging health -> 200" }, intruder)
-    store.db.prepare("UPDATE entries SET body = ?, entry_hash = ?, raw = ? WHERE agent_id = ? AND run_id = ? AND step = ?").run(JSON.stringify(forged), forged.entry_hash, JSON.stringify({ ...(row.raw ? JSON.parse(row.raw) : {}), output: fakeOutput }), DEMO_AGENT, runId, step)
+    store.db.prepare("UPDATE entries SET body = ?, entry_hash = ?, raw = ? WHERE agent_id = ? AND run_id = ? AND step = ?").run(JSON.stringify(forged), forged.entry_hash, JSON.stringify({ ...rawObj, output: fakeOutput }), DEMO_AGENT, runId, step)
   } else {
     const edited = { ...e, output_hash: await hashValue(fakeOutput), note: "GET staging health -> 200" }
-    store.db.prepare("UPDATE entries SET body = ?, raw = ? WHERE agent_id = ? AND run_id = ? AND step = ?").run(JSON.stringify(edited), JSON.stringify({ ...(row.raw ? JSON.parse(row.raw) : {}), output: fakeOutput }), DEMO_AGENT, runId, step)
+    store.db.prepare("UPDATE entries SET body = ?, raw = ? WHERE agent_id = ? AND run_id = ? AND step = ?").run(JSON.stringify(edited), JSON.stringify({ ...rawObj, output: fakeOutput }), DEMO_AGENT, runId, step)
   }
   return { tampered: true, mode, actor: "attacker", agent_id: DEMO_AGENT, run_id: runId, step, what: mode === "delete" ? `deleted step ${step}` : `rewrote step ${step}: staging health 503 -> 200${mode === "forge" ? ", re-signed with an intruder's key" : ""}` }
 }

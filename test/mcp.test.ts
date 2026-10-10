@@ -31,7 +31,15 @@ function freePort(): Promise<number> {
 async function boot(dataDir: string) {
   const port = await freePort()
   const built = buildCtx({ dataDir, tz: TZ, arkiv: false, now: () => NOW })
-  const http = await startHttp(built.ctx, { host: "127.0.0.1", port })
+  const http = await startHttp(built.ctx, {
+    host: "127.0.0.1",
+    port,
+    demo: {
+      tamper: (q) => tamperDemo(built.local, q),
+      reset: async () => ({ reset: true, runs: await seedDemo(built.local, built.ctx.keys, TZ, NOW, true) }),
+      clientFile: () => demoClientFile(built.local),
+    },
+  })
   return { ...built, http, url: new URL(`http://127.0.0.1:${port}/mcp`) }
 }
 
@@ -147,6 +155,14 @@ describe("MCP server over Streamable HTTP", () => {
   it("refuses an unknown tamper mode instead of falling back to an edit", async () => {
     await seedDemo(srv.local, srv.ctx.keys, TZ, NOW, true)
     await assert.rejects(tamperDemo(srv.local, { mode: "rewrite" as never }), (e: Error & { status?: number }) => e.status === 400 && /unknown tamper mode/.test(e.message))
+    const res = await fetch(new URL("/demo/tamper", srv.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "rewrite" }),
+    })
+    assert.equal(res.status, 400)
+    const json = (await res.json()) as { error: string }
+    assert.match(json.error, /unknown tamper mode/)
   })
 
   it("get_run returns an export that verifies offline; the run resource returns the same", async () => {

@@ -11,6 +11,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
 import { createMcpServer } from "./mcp.ts"
 import type { Ctx } from "./audit.ts"
+import type { TamperMode } from "./demo.ts"
 
 export interface HttpOptions {
   host: string
@@ -20,7 +21,7 @@ export interface HttpOptions {
   /** Bearer token required on /mcp, if set. */
   token?: string
   /** Demo helpers (/demo/*): tamper with the local file, reseed. Never on in production. */
-  demo?: { tamper: (q: { run_id?: string; step?: number }) => Promise<unknown>; reset: () => Promise<unknown>; clientFile: () => Promise<unknown> }
+  demo?: { tamper: (q: { run_id?: string; step?: number; mode?: TamperMode }) => Promise<unknown>; reset: () => Promise<unknown>; clientFile: () => Promise<unknown> }
   log?: (msg: string) => void
 }
 
@@ -127,7 +128,7 @@ export function startHttp(ctx: Ctx, o: HttpOptions): Promise<Server> {
     if (origin && !origins.includes(origin)) return send(res, 403, { error: "cross-origin request refused" })
     if (path === "/demo/client-file.json" && req.method === "GET") return send(res, 200, await o.demo.clientFile())
     if (req.method !== "POST") return send(res, 405, { error: "POST only" })
-    const body = ((await readBody(req)) ?? {}) as { run_id?: string; step?: number }
+    const body = ((await readBody(req)) ?? {}) as { run_id?: string; step?: number; mode?: TamperMode }
     if (path === "/demo/tamper") return send(res, 200, await o.demo.tamper(body))
     if (path === "/demo/reset") return send(res, 200, await o.demo.reset())
     return send(res, 404, { error: "unknown demo endpoint" })
