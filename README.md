@@ -10,9 +10,9 @@ Built for BCH BLAZE 2026. License: MIT.
 
 | Part | State |
 |---|---|
-| `contracts/AgentLeash.cash` (CashScript 0.14) | v0, written 10.10.2026. Not audited. **Not frozen; do not put real money in it.** |
+| `contracts/AgentLeash.cash` (CashScript 0.14) | v0, written 10.10.2026. One automated review (Jules, see `REVIEW.md`: no critical/high/medium findings), not a professional audit. **Not frozen; do not put real money in it.** |
 | TypeScript SDK (`src/`) | genesis, pay, top-up, withdraw, receipt + request-hash helpers |
-| Tests (MockNetworkProvider, vitest) | 53 tests: happy paths, 29 attack cases, owner path, genesis, 6-seed property test |
+| Tests (MockNetworkProvider, vitest) | 84 tests: happy paths, 29 attack cases, owner path, genesis, 6-seed property test, plus 29 tests from an external review (`REVIEW.md`) |
 | Chipnet | full scenario run with real transactions, see below |
 | x402 server (`exact` + `leash` schemes), agent, web UI (WizardConnect) | not started (stage 2) |
 | Mainnet | not deployed (planned after security review and code freeze) |

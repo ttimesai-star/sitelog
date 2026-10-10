@@ -105,3 +105,14 @@ Several low and informational findings were identified in SDK edge cases and tra
 - [x] **Genesis rules**: Verified `vout === 0` constraint and single mutable NFT minting.
 - [x] **Withdraw / Top-up builders**: Verified input index mapping for owner unlocker and change calculations.
 - [x] **`computeRequestHash`**: Verified domain-separated hashing and length prefixing.
+
+---
+
+## Maintainer response (10.10.2026)
+
+| Finding | Action |
+|---|---|
+| AL-01 | Accepted as designed; documented in README ("Known properties and limits") and asserted by the property test. |
+| AL-02, AL-03, AL-05 | No change; defended, covered by tests. |
+| AL-04 | **Fixed.** Reproduced with test `auto-fee re-measures when the change output appears only at the final fee (Jules AL-04)`: the probe at 2000 sats left no change output, the final fee did, and the build failed below 1 sat/byte. `withAutoFee` now re-measures the transaction it returns and adds one output's worth of fee when a cheaper fee creates an extra output. |
+| AL-06 | **Fixed.** `buildWithdraw` forwards stray token UTXOs to a required `ownerTokenAddress` instead of burning them, and refuses without it. Test `withdraw forwards stray tokens to the owner instead of burning them (Jules AL-06)`. |

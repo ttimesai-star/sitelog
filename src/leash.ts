@@ -10,12 +10,35 @@ import { receiptLockingBytecode } from './receipt.js';
 export const MIN_STATE_VALUE = 1000n;
 export const DUST = 546n;
 
-/** Build with a provisional fee, measure the signed size, rebuild with size * feeRate (+ margin). */
+/**
+ * Build with a provisional fee, measure the signed size, rebuild with size * feeRate (+ margin) and
+ * repeat until the fee covers the size of the transaction actually returned. Re-measuring matters when
+ * the fee decides whether a change output exists (Jules review AL-04): the final transaction can be
+ * one output larger than the probe.
+ */
 export function withAutoFee(build: (fee: bigint) => TransactionBuilder, feeRate = 1, margin = 5n): { builder: TransactionBuilder; fee: bigint } {
-  const probe = build(2000n).build();
-  const size = BigInt(probe.length / 2);
-  const fee = BigInt(Math.ceil(Number(size) * feeRate)) + margin;
-  return { builder: build(fee), fee };
+  const need = (hex: string) => BigInt(Math.ceil((hex.length / 2) * feeRate)) + margin;
+  let fee: bigint | undefined;
+  let lastErr: unknown;
+  for (const probeFee of [2000n, 1000n, 600n]) {
+    try { fee = need(build(probeFee).build()); break; } catch (e) { lastErr = e; }
+  }
+  if (fee === undefined) throw lastErr;
+  for (let i = 0; i < 6; i++) {
+    const builder = build(fee);
+    let hex: string;
+    try { hex = builder.build(); }
+    catch (e: any) {
+      // the lower fee added an output (e.g. change crossed the dust line): pay for ~one more output
+      if (!/lower than the standard minimum fee/.test(String(e?.message))) throw e;
+      fee += 40n;
+      continue;
+    }
+    const required = need(hex);
+    if (required <= fee) return { builder, fee };
+    fee = required;
+  }
+  throw new Error('fee estimation did not converge');
 }
 
 export interface LeashParams {
@@ -184,14 +207,26 @@ export class AgentLeash {
    * WizardConnect placeholder).
    */
   buildWithdraw(args: {
-    contractUtxos: Utxo[]; ownerUtxo: Utxo; ownerUnlocker: Unlocker; ownerAddress: string; fee?: bigint;
+    contractUtxos: Utxo[]; ownerUtxo: Utxo; ownerUnlocker: Unlocker; ownerAddress: string;
+    /** Token-aware owner address; required when stray token UTXOs (not the state NFT) are swept. */
+    ownerTokenAddress?: string;
+    fee?: bigint;
   }): TransactionBuilder {
     if (args.fee === undefined) return withAutoFee((f) => this.buildWithdraw({ ...args, fee: f })).builder;
     const fee = args.fee;
+    const isState = (u: Utxo) => u.token?.category === this.params.stateCategory && u.token.nft?.capability === 'mutable';
+    // Jules review AL-06: stray tokens someone sent to the leash are forwarded to the owner, not burned.
+    const strayTokens = args.contractUtxos.filter((u) => u.token && !isState(u));
+    if (strayTokens.length && !args.ownerTokenAddress) throw new Error('stray token UTXOs present: pass ownerTokenAddress to forward them');
     const tb = new TransactionBuilder({ provider: this.provider });
     tb.addInput(args.ownerUtxo, args.ownerUnlocker);
     for (const u of args.contractUtxos) tb.addInput(u, this.ownerUnlocker(0));
-    const total = args.ownerUtxo.satoshis + args.contractUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    let total = args.ownerUtxo.satoshis + args.contractUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    for (const u of strayTokens) {
+      tb.addOutput({ to: args.ownerTokenAddress!, amount: MIN_STATE_VALUE, token: u.token });
+      total -= MIN_STATE_VALUE;
+    }
+    // the state NFT (if included) is burned: the leash ends here
     tb.addOutput({ to: args.ownerAddress, amount: total - fee });
     return tb;
   }

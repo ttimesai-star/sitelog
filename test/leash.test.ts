@@ -284,6 +284,30 @@ describe('owner path', () => {
     expect(80_000n + 15_000n + 10_000n - got).toBeLessThan(2_000n);
   });
 
+  it('withdraw forwards stray tokens to the owner instead of burning them (Jules AL-06)', async () => {
+    const ctx = setup(); ctx.addState(30_000n);
+    const cat = randomCategory();
+    ctx.provider.addUtxo(ctx.leash.tokenAddress, { ...randomUtxo({ satoshis: 2_000n }), token: { category: cat, amount: 77n } });
+    const own = ctx.addP2pkh(ctx.owner, 10_000n);
+    const { state, invalid } = await ctx.leash.getUtxos();
+    expect(invalid).toHaveLength(1);
+    const base = { contractUtxos: [state!, ...invalid], ownerUtxo: own, ownerUnlocker: ctx.owner.sig.unlockP2PKH(), ownerAddress: ctx.owner.address };
+    expect(() => ctx.leash.buildWithdraw(base)).toThrow(/ownerTokenAddress/);
+    await ctx.leash.buildWithdraw({ ...base, ownerTokenAddress: ctx.owner.tokenAddress }).send();
+    const got = await ctx.provider.getUtxos(ctx.owner.tokenAddress);
+    expect(got.find((u) => u.token?.category === cat)?.token?.amount).toBe(77n);
+    expect(await ctx.leash.contract.getUtxos()).toHaveLength(0);
+  });
+
+  it('auto-fee re-measures when the change output appears only at the final fee (Jules AL-04)', async () => {
+    const ctx = setup(); ctx.addState(5_000n);
+    // probe fee 2000 leaves change below dust (no change output); the real fee (~400) leaves change above it
+    const own = ctx.addP2pkh(ctx.owner, 2_000n + 1_000n + 300n);
+    const tb = ctx.leash.buildTopUp({ stateUtxo: await current(ctx), ownerUtxo: own, ownerUnlocker: ctx.owner.sig.unlockP2PKH(), ownerAddress: ctx.owner.address, amount: 2_000n });
+    await expect(tb.send()).resolves.toBeTruthy();
+    expect((await current(ctx)).satoshis).toBe(7_000n);
+  });
+
   it('tops up the state UTXO without touching the state', async () => {
     const ctx = setup(); ctx.addState(5_000n, { elapsed: 2n, spent: 700n });
     const own = ctx.addP2pkh(ctx.owner, 50_000n);
