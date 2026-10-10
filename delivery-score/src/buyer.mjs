@@ -33,12 +33,17 @@ const erc20 = parseAbi(["function balanceOf(address) view returns (uint256)", "e
 async function spentSoFar() {
   if (!existsSync(SPEND_LOG)) return 0
   const rows = (await readFile(SPEND_LOG, "utf8")).trim().split("\n").slice(1)
-  return rows.reduce((s, r) => s + (Number(r.split(",")[5]) || 0), 0)
+  // Budget column (11th): the on-chain amount, or the signed amount when settlement could not be
+  // confirmed. Rows without it fall back to amount_usdc.
+  return rows.reduce((s, r) => {
+    const c = r.split(",")
+    return s + (Number(c[10] ?? c[5]) || 0)
+  }, 0)
 }
 async function spendRow(o) {
-  if (!existsSync(SPEND_LOG)) await writeFile(SPEND_LOG, "ts_utc,endpoint,method,payTo,network,amount_usdc,txid,paid_status,delivered,agentlog_run\n")
+  if (!existsSync(SPEND_LOG)) await writeFile(SPEND_LOG, "ts_utc,endpoint,method,payTo,network,amount_usdc,txid,paid_status,delivered,agentlog_run,budget_usdc\n")
   const esc = (v) => `"${String(v ?? "").replace(/"/g, "'")}"`
-  await appendFile(SPEND_LOG, [o.ts, esc(o.endpoint), o.method, o.payTo, o.network, o.amount, o.txid ?? "", o.paid_status, o.delivered, o.run].join(",") + "\n")
+  await appendFile(SPEND_LOG, [o.ts, esc(o.endpoint), o.method, o.payTo, o.network, o.amount, o.txid ?? "", o.paid_status, o.delivered, o.run, o.budget ?? o.amount].join(",") + "\n")
 }
 
 // ---------- targets: cheapest well-formed Base/USDC/exact challenges, one per host ----------
@@ -91,7 +96,12 @@ if (DRY) {
   stop = true
 }
 
-const client = new x402Client()
+// The selector records exactly which requirement the client signs, for v1 and v2 alike.
+let selected = null
+const client = new x402Client((v, reqs) => {
+  selected = { v, req: reqs[0] }
+  return reqs[0]
+})
 client.register(BASE, new ExactEvmScheme(account))
 client.registerV1("base", new ExactEvmSchemeV1(account))
 // Policy: only Base USDC exact within the per-op cap, whatever else the seller offers.
@@ -162,6 +172,7 @@ for (const t of stop ? [] : targets) {
   const run = `buy-${runTag}-${createHash("sha256").update(t.r.id).digest("hex").slice(0, 10)}`
   const { url, init } = reqInit(t)
   const log = (tool, input, output, note) => rec.log({ agent_id: AGENT, run_id: run, action: "tool.call", tool, input, output, note })
+  let sentUsd = 0
   const row = { ts: new Date().toISOString(), endpoint: t.r.resource, method: t.r.method, payTo: t.a.payTo, network: BASE, amount: 0, paid_status: "not_paid", delivered: "n/a", run }
   try {
     const first = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT) })
@@ -175,17 +186,21 @@ for (const t of stop ? [] : targets) {
     }
     const pr = httpc.getPaymentRequiredResponse((h) => first.headers.get(h), (() => { try { return JSON.parse(firstBody) } catch { return undefined } })())
     await log("x402.challenge", { url, method: init.method }, { status: 402, payment_required: pr }, "challenge before paying")
+    selected = null
     const payload = await httpc.createPaymentPayload(pr)
-    const chosen = payload.accepted ?? payload.paymentRequirements ?? null
-    const amountRaw = String(chosen?.amount ?? chosen?.maxAmountRequired ?? t.a.amount)
+    const chosen = selected?.req
+    if (!chosen) throw new Error("guard: the client did not report the requirement it signed")
+    const amountRaw = String(selected.v === 1 ? chosen.maxAmountRequired : chosen.amount)
     const usd = Number(amountRaw) / 1e6
     if (!(usd > 0 && usd <= MAX_PRICE) || total + usd > HARD_TOTAL) throw new Error(`guard: amount ${usd} outside limits`)
     const headers = httpc.encodePaymentSignatureHeader(payload)
     await log("x402.pay", { url, accepted: chosen, from: account.address }, { header_names: Object.keys(headers), amount_usdc: usd }, `paying ${usd} USDC to ${chosen?.payTo}`)
+    sentUsd = usd // from here on a signed payment has left the process
     const t0 = performance.now()
     let paid, body = "", err = null
     try {
-      paid = await fetch(url, { ...init, headers: { ...init.headers, ...headers }, signal: AbortSignal.timeout(TIMEOUT) })
+      // No redirects with a signed payment attached.
+      paid = await fetch(url, { ...init, redirect: "manual", headers: { ...init.headers, ...headers }, signal: AbortSignal.timeout(TIMEOUT) })
       body = (await paid.text()).slice(0, 65536)
     } catch (e) {
       err = e.name === "TimeoutError" ? `no response within ${TIMEOUT / 1000} s` : String(e.message).slice(0, 200)
@@ -211,8 +226,12 @@ for (const t of stop ? [] : targets) {
     const chainFact = txid ? await receipt(txid, chosen?.payTo, amountRaw) : { status: "no txid in PAYMENT-RESPONSE" }
     await log("chain.receipt", { txid, network: BASE }, chainFact, "on-chain check of the payment")
     const charged = chainFact.transfer_found ? chainFact.value : 0
-    total += charged
+    // A signed authorization may still be settled later: unless the transfer is confirmed, the signed
+    // amount counts against the budget.
+    const budget = chainFact.transfer_found ? charged : usd
+    total += budget
     row.amount = charged
+    row.budget = budget
     row.txid = txid
     row.paid_status = chainFact.transfer_found ? "settled_onchain" : txid ? "txid_without_transfer" : "no_settlement"
     row.delivered = out.status >= 200 && out.status < 300 && out.bytes > 0 ? "yes" : err ? "no_response" : `status_${out.status}`
@@ -233,8 +252,12 @@ for (const t of stop ? [] : targets) {
     await writeFile(PURCHASES, JSON.stringify(purchases, null, 1))
     console.log(`${row.paid_status} ${charged} USDC  ${row.delivered}  ${ms} ms  ${t.r.resource}`)
   } catch (e) {
-    await log("buyer.error", { url }, { error: String(e.message).slice(0, 300) }, "purchase aborted before payment").catch(() => {})
-    row.paid_status = "aborted"
+    await log("buyer.error", { url }, { error: String(e.message).slice(0, 300) }, sentUsd ? "error after the signed payment was sent" : "purchase aborted before payment").catch(() => {})
+    row.paid_status = sentUsd ? "error_after_payment_sent" : "aborted"
+    if (sentUsd && row.budget === undefined) {
+      row.budget = sentUsd
+      total += sentUsd
+    }
     console.log(`aborted ${t.r.resource}: ${e.message}`)
   }
   await spendRow(row)
