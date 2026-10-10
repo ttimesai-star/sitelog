@@ -5,7 +5,7 @@ import { createServer } from "node:http"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import { randomUUID, timingSafeEqual } from "node:crypto"
 import { readFile } from "node:fs/promises"
-import { extname, join, normalize } from "node:path"
+import { extname, isAbsolute, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js"
@@ -67,6 +67,15 @@ function tokenOk(req: IncomingMessage, token?: string) {
 
 export function startHttp(ctx: Ctx, o: HttpOptions): Promise<Server> {
   const sessions = new Map<string, StreamableHTTPServerTransport>()
+  // Sessions of clients that went away without DELETE are closed after 30 idle minutes.
+  const lastSeen = new Map<string, number>()
+  const IDLE_MS = 30 * 60_000
+  const sweep = setInterval(() => {
+    const now = Date.now()
+    for (const [id, t] of sessions) if (now - (lastSeen.get(id) ?? 0) > IDLE_MS) void t.close()
+  }, 60_000)
+  sweep.unref()
+  const touch = (id?: string) => id && lastSeen.set(id, Date.now())
   const hosts = [`127.0.0.1:${o.port}`, `localhost:${o.port}`, `[::1]:${o.port}`, ...(o.allowedHosts ?? [])]
   const origins = hosts.flatMap((h) => [`http://${h}`, `https://${h}`])
   const log = o.log ?? (() => {})
@@ -84,6 +93,7 @@ export function startHttp(ctx: Ctx, o: HttpOptions): Promise<Server> {
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (id) => {
             sessions.set(id, t!)
+            touch(id)
             log(`session ${id.slice(0, 8)} opened (${sessions.size} live)`)
           },
           enableDnsRebindingProtection: true,
@@ -91,15 +101,20 @@ export function startHttp(ctx: Ctx, o: HttpOptions): Promise<Server> {
           allowedOrigins: origins,
         })
         t.onclose = () => {
-          if (t!.sessionId) sessions.delete(t!.sessionId)
+          if (t!.sessionId) {
+            sessions.delete(t!.sessionId)
+            lastSeen.delete(t!.sessionId)
+          }
         }
         await createMcpServer(ctx).connect(t)
       }
+      touch(sid)
       return t.handleRequest(req, res, body)
     }
     if (req.method === "GET" || req.method === "DELETE") {
       const t = sid ? sessions.get(sid) : undefined
       if (!t) return rpcError(res, sid ? 404 : 400, "unknown or missing session")
+      touch(sid)
       return t.handleRequest(req, res)
     }
     res.writeHead(405, { allow: "GET, POST, DELETE" }).end()
@@ -119,10 +134,18 @@ export function startHttp(ctx: Ctx, o: HttpOptions): Promise<Server> {
   }
 
   async function web(res: ServerResponse, path: string) {
-    const rel = normalize(path === "/" ? "index.html" : decodeURIComponent(path.slice(1)))
-    if (rel.startsWith("..") || rel.includes("\0")) return send(res, 400, { error: "bad path" })
+    let name: string
     try {
-      const body = await readFile(join(WEB, rel))
+      name = path === "/" ? "index.html" : decodeURIComponent(path.slice(1))
+    } catch {
+      return send(res, 400, { error: "bad path" })
+    }
+    // Resolve, then require the result to stay inside web/ (covers "..", drive letters, UNC paths).
+    const file = resolve(WEB, name)
+    const rel = relative(WEB, file)
+    if (!rel || rel.startsWith("..") || isAbsolute(rel) || name.includes("\0")) return send(res, 400, { error: "bad path" })
+    try {
+      const body = await readFile(file)
       res.writeHead(200, {
         "content-type": TYPES[extname(rel)] ?? "application/octet-stream",
         "cache-control": "no-store",
@@ -130,7 +153,7 @@ export function startHttp(ctx: Ctx, o: HttpOptions): Promise<Server> {
         // The sandbox page hosts MCP App views: inline code allowed, no network at all (the view's
         // declared connect domains are empty). It is framed with sandbox="allow-scripts" (opaque origin).
         "content-security-policy":
-          rel === "sandbox.html"
+          rel.split(sep).join("/") === "sandbox.html"
             ? "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'self'"
             : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
       })
@@ -142,6 +165,8 @@ export function startHttp(ctx: Ctx, o: HttpOptions): Promise<Server> {
 
   const server = createServer(async (req, res) => {
     const path = new URL(req.url ?? "/", "http://x").pathname
+    // Every route, not only /mcp: a Host we do not serve means DNS rebinding or a misrouted request.
+    if (!hosts.includes(String(req.headers.host ?? ""))) return send(res, 403, { error: "Host not allowed" })
     try {
       if (path === "/mcp") return await mcp(req, res)
       if (path.startsWith("/demo/")) return await demo(req, res, path)
@@ -154,5 +179,6 @@ export function startHttp(ctx: Ctx, o: HttpOptions): Promise<Server> {
       else res.end()
     }
   })
+  server.on("close", () => clearInterval(sweep))
   return new Promise((resolve) => server.listen(o.port, o.host, () => resolve(server)))
 }

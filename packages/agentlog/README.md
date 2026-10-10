@@ -58,7 +58,7 @@ Not protected: an agent that lies at the moment it writes; with a local store, w
 npm test
 ```
 
-55 tests: hashes, signatures, gaps, forks, foreign signers, seals, exports, dispute replay, salted commitments, the recorder, SQLite persistence and tampering, the Arkiv store.
+56 tests: hashes, signatures, gaps, forks, foreign signers, seals, exports, dispute replay, salted commitments, the recorder, SQLite persistence and tampering, the Arkiv store.
 
 ## History
 

@@ -283,6 +283,8 @@ export function explain(r: RunReport): Explanation {
   }
   for (const c of r.checks) {
     if (c.ok) continue
+    // An entry with an invalid step number has no place in the chain; it is listed in r.problems.
+    if (!Number.isInteger(c.step) || c.step < 0) continue
     // A step whose only problem is the missing link before it is a consequence, not a new break.
     const own = c.problems.filter((p) => p !== "previous step missing, link cannot be checked")
     if (!own.length) continue

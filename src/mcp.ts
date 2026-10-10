@@ -94,7 +94,8 @@ export function createMcpServer(ctx: Ctx): McpServer {
     },
     wrap(async (a) => {
       const { audit } = await auditRun(ctx, (a.source ?? "local") as Source, a.agent_id, a.run_id)
-      return result(audit.explain.sentence, { kind: "run", ...audit })
+      const caveat = audit.signer_known ? "" : " Note: no key is registered for this agent here, so the expected signer was taken from the run itself."
+      return result(audit.explain.sentence + caveat, { kind: "run", ...audit })
     }),
   )
 

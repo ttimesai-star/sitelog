@@ -64,11 +64,17 @@ class McpClient {
     const text = await res.text()
     let messages = []
     if (type.includes("text/event-stream")) {
-      // SSE: events separated by a blank line, JSON-RPC in the data: lines.
-      for (const block of text.split(/\r?\n\r?\n/)) {
-        const data = block.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n")
-        if (data) messages.push(JSON.parse(data))
+      // SSE, line by line: data: lines accumulate until a blank line ends the event.
+      let data = []
+      const flush = () => {
+        if (data.length) messages.push(JSON.parse(data.join("\n")))
+        data = []
       }
+      for (const line of text.split(/\r\n|\r|\n/)) {
+        if (line === "") flush()
+        else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""))
+      }
+      flush()
     } else if (text) {
       const j = JSON.parse(text)
       messages = Array.isArray(j) ? j : [j]

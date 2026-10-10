@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { Server } from "node:http"
+import { request as httpRequest } from "node:http"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js"
@@ -169,5 +169,25 @@ describe("MCP server over Streamable HTTP", () => {
     assert.equal(evil.status, 403)
     const bad = (await client.callTool({ name: "verify_run", arguments: { agent_id: "../etc", run_id: "x" } })) as any
     assert.equal(bad.isError, true)
+  })
+
+  it("serves only files inside web/, and refuses a foreign Host on every route (review fixes, Jules 10 Oct)", async () => {
+    const get = (path: string, host = `127.0.0.1:${srv.url.port}`) =>
+      new Promise<number>((resolve, reject) => {
+        const req = httpRequest({ host: "127.0.0.1", port: Number(srv.url.port), path, headers: { host } }, (res) => {
+          res.resume()
+          resolve(res.statusCode ?? 0)
+        })
+        req.on("error", reject)
+        req.end()
+      })
+    assert.equal(await get("/"), 200)
+    assert.equal(await get("/sandbox.html"), 200)
+    for (const p of ["/..%2Fpackage.json", "/..%5Cpackage.json", "/C:%2FWindows%2Fwin.ini", "/%2Fetc%2Fpasswd", "/x%00.html", "/%E0%A4%A"]) {
+      assert.ok([400, 404].includes(await get(p)), p)
+    }
+    assert.equal(await get("/package.json"), 404)
+    assert.equal(await get("/healthz", "attacker.example:8787"), 403)
+    assert.equal(await get("/demo/client-file.json", "attacker.example"), 403)
   })
 })

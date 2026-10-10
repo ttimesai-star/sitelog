@@ -155,6 +155,18 @@ describe("explain", () => {
   })
 })
 
+describe("explain with malformed entries (review fix, Jules 10 Oct)", () => {
+  it("never names a non-integer step as the break, and still calls the log broken", async () => {
+    const s = new MemoryStore()
+    await run(s)
+    ;(s.rows[2].entry as any).step = 1.5
+    const v = await verifyStored(s, "bot", "r1", agent.address)
+    assert.equal(v.report.verdict, "broken")
+    assert.equal(v.explain.first_break?.step, 2)
+    assert.doesNotMatch(v.explain.sentence, /NaN|1\.5/)
+  })
+})
+
 describe("Arkiv store", () => {
   it("writes each entry as a readonly entity and refuses writes without a key", async () => {
     const batches: any[] = []

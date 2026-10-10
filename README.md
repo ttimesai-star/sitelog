@@ -147,7 +147,7 @@ The [Agent Skill](skills/agentlog-audit/SKILL.md) tells a model when and how to 
 
 ## Tests
 
-`npm test` runs 63 tests: the library (hashing, signatures, gaps, forks, foreign signers, seals, export, dispute replay, salted commitments, SQLite persistence and tampering) and the server end to end, where the SDK's own MCP client talks Streamable HTTP to it: protocol negotiation, the six tools and the MCP App resource, a run logged step by step, the voice question before and after an attacker edits the SQLite file, a re-signed and a deleted step, a dispute, an offline-verifiable export, state across a server restart, and refused requests (no session, foreign `Origin`, bad ids). CI runs them on Node 22.18 and 24 and smoke-tests the HTTP endpoint.
+`npm test` runs 65 tests: the library (hashing, signatures, gaps, forks, foreign signers, seals, export, dispute replay, salted commitments, SQLite persistence and tampering) and the server end to end, where the SDK's own MCP client talks Streamable HTTP to it: protocol negotiation, the six tools and the MCP App resource, a run logged step by step, the voice question before and after an attacker edits the SQLite file, a re-signed and a deleted step, a dispute, an offline-verifiable export, state across a server restart, refused requests (no session, foreign `Origin` or `Host`, bad ids) and static paths that try to leave `web/`. CI runs them on Node 22.18 and 24 and smoke-tests the HTTP endpoint.
 
 ## Built during the hackathon
 
