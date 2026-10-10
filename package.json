@@ -4,7 +4,7 @@
   "description": "Tamper-evident, censorship-resistant audit trail for AI agents on Arkiv, plus a construction site log built on the same rules (Tiramisu testnet)",
   "type": "module",
   "license": "MIT",
-  "author": "Artur Baranovsky",
+  "author": "Artur Baranouski",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
