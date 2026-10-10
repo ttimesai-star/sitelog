@@ -8,7 +8,7 @@ This review evaluates `contracts/AgentLeash.cash` and the associated TypeScript 
 
 No critical, high, or medium severity vulnerabilities were found that allow an agent holding **only** the agent key (not the owner key) to bypass the on-chain financial boundaries or corrupt contract state. The contract design strictly enforces input/output structural constraints, recipient lockings, miner fee caps, state NFT capability preservation, and BIP68 relative locktimes.
 
-Several low and informational findings were identified in SDK edge cases and transaction building semantics.
+Several low and informational findings were identified in SDK edge cases, transaction building semantics, and wallet integration requirements. **No new exploitable vulnerabilities were identified in the second adversarial pass.**
 
 ---
 
@@ -19,9 +19,13 @@ Several low and informational findings were identified in SDK edge cases and tra
 | **AL-01** | Fixed-Window Reset Boundary (2x Limit) | Info | `documents fixed-window boundary: 2x limit across window reset (intended behavior)` | Verified as documented design limit |
 | **AL-02** | Prohibited Token Outputs on Recipient & Receipt Slots | Info / Defense | `token outputs prohibited on payment output (out[1]) and receipt output (out[2])` | Defended by contract checks (`tokenCategory == 0x`) |
 | **AL-03** | 0-Conf Clock Interaction & Unconfirmed Chains | Info / Defense | `interaction of unconfirmed chains (0-conf) with the clock` | Defended by contract CSV age checks (`this.age >= elapsedAdd`) |
-| **AL-04** | Potential Dust Output Shift in `withAutoFee` Probe Pass | Low | `documents withAutoFee edge case: change output dust boundary shift between probe and final pass` | SDK fee estimation edge case if change sits near dust threshold (546 sat) |
+| **AL-04** | Potential Dust Output Shift in `withAutoFee` Probe Pass | Low | `documents withAutoFee edge case: change output dust boundary shift between probe and final pass` | SDK fee estimation edge case if change sits near dust threshold (546 sat); Fixed in src/leash.ts |
 | **AL-05** | Parameter Collision Resistance in Receipt Request Hashing | Info / Defense | `prevents parameter collision between different nonce/method/url combinations` | Defended by length-prefixed domain separation in `computeRequestHash` |
-| **AL-06** | Stray Token Sweeping Requirement for Contract Usability | Low | `stray tokens on contract do not lock out the owner` | Requires `owner()` path to include appropriate token output when sweeping stray tokens |
+| **AL-06** | Stray Token Sweeping Requirement for Contract Usability | Low | `stray tokens on contract do not lock out the owner` | Fixed in src/leash.ts (`buildWithdraw` forwards stray tokens) |
+| **AL-07** | Outflow Calculation Satoshis Preservation | Info / Defense | `(3a) Outflow calculation matches actual satoshis leaving contract` | Verified; outflow strictly accounts for payment amount plus miner fee |
+| **AL-08** | Owner Path Signature Hash (`SIGHASH_ALL`) Requirement | Info / Operational | `(3b) owner() path signature hash analysis (SIGHASH_ALL requirement)` | Wallet operational requirement: owner must sign owner inputs with `SIGHASH_ALL` |
+| **AL-09** | Recipient Covenant / P2SH Recycling Risk | Info / Config Risk | `(3c) Agent paying to allow-listed recipient that is a covenant/P2SH contract` | Operational config risk: allow-listed recipient addresses must be trusted |
+| **AL-10** | Transaction Version and Locktime Semantics | Info / Defense | `(3d) tx.version and locktime mechanics` | Verified; BIP68 CSV semantics correctly enforced under tx.version 2 |
 
 ---
 
@@ -85,6 +89,45 @@ Several low and informational findings were identified in SDK edge cases and tra
 
 ---
 
+### AL-07: Outflow Calculation Satoshis Preservation
+- **Severity**: Info / Defense
+- **Evidence**: `(3a) Outflow calculation matches actual satoshis leaving contract`
+- **Analysis**: Evaluated whether an agent could construct a transaction where `outflow = tx.inputs[0].value - tx.outputs[0].value` computes a value smaller than the actual satoshis leaving the contract.
+- **Contract Mechanics**: `pay()` enforces exactly 1 input (`tx.inputs.length == 1`), which is the contract itself (`this.activeInputIndex == 0`), and exactly 3 outputs (`tx.outputs.length == 3`). Output 0 returns to the contract address, output 1 goes to an allow-listed recipient with value `amount`, and output 2 is an OP_RETURN receipt carrying 0 satoshis. By conservation of satoshis in Bitcoin consensus:
+  `tx.inputs[0].value = tx.outputs[0].value + tx.outputs[1].value (amount) + tx.outputs[2].value (0) + miner_fee`
+  `outflow = tx.inputs[0].value - tx.outputs[0].value = amount + miner_fee`
+  Thus, `outflow` precisely captures every satoshi exiting the contract. No satoshis can leave the contract unaccounted for.
+- **Suggested Fix / Recommendation**: No change needed.
+
+---
+
+### AL-08: Owner Path Signature Hash (`SIGHASH_ALL`) Requirement
+- **Severity**: Info / Operational
+- **Evidence**: `(3b) owner() path signature hash analysis (SIGHASH_ALL requirement)`
+- **Analysis**: `owner(int ownerInputIndex)` checks `tx.inputs[ownerInputIndex].lockingBytecode == ownerLock`. If an owner signs their owner input with a non-default signature hash (e.g. `SIGHASH_NONE`, `SIGHASH_SINGLE`, or `ANYONECANPAY`), the owner input could be detached or outputs malleated by third parties or the agent.
+- **Impact & Wallet Requirement**: If the owner signs with `SIGHASH_NONE`, an eavesdropper can strip or modify outputs to steal withdrawn funds. Owners and wallet software interacting with `owner()` MUST sign owner UTXO inputs with `SIGHASH_ALL` (or `SIGHASH_ALL | SIGHASH_UTXOS`). CashScript SDK's `SignatureTemplate` defaults to `SIGHASH_ALL`, ensuring safe default transaction construction.
+- **Suggested Fix / Recommendation**: Document the explicit requirement that owner wallet software MUST use `SIGHASH_ALL` when signing inputs for `owner()`.
+
+---
+
+### AL-09: Recipient Covenant / P2SH Recycling Risk
+- **Severity**: Info / Config Risk
+- **Evidence**: `(3c) Agent paying to allow-listed recipient that is a covenant/P2SH contract`
+- **Analysis**: Evaluated whether an allow-listed recipient (`allowA`, `allowB`, `allowC`) that is itself a covenant or P2SH address could return/recycle funds back to the agent or leash contract.
+- **Impact**: This is exclusively a configuration risk. The `AgentLeash` contract enforces that payment output 1 matches an allow-listed locking bytecode. It cannot restrict what the recipient script or contract does with received funds. Owners configuring `allowA`, `allowB`, and `allowC` must ensure that allow-listed scripts represent intended recipient locking bytecodes.
+- **Suggested Fix / Recommendation**: Document that configuring allow-listed addresses is a trust/config risk managed at initialization time by the owner.
+
+---
+
+### AL-10: Transaction Version and Locktime Semantics
+- **Severity**: Info / Defense
+- **Evidence**: `(3d) tx.version and locktime mechanics`
+- **Analysis**: Evaluated potential interactions between `tx.version`, `tx.locktime`, and relative locktimes (`this.age >= elapsedAdd`).
+- **Contract Mechanics**: Relative sequence locktimes (`OP_CHECKSEQUENCEVERIFY`) require transaction version >= 2 per BIP68 consensus rules. If `tx.version < 2`, CSV checks fail during block/mempool validation. CashScript transaction builder defaults to transaction version 2 when relative locktimes are present. `tx.locktime` (absolute locktime) operates independently of input sequence relative locktimes.
+- **Suggested Fix / Recommendation**: No change needed.
+
+---
+
 ## Area Checklists & Verification Log
 
 ### Contract Analysis (`contracts/AgentLeash.cash`)
@@ -98,6 +141,10 @@ Several low and informational findings were identified in SDK edge cases and tra
 - [x] **Byte order**: Verified `stateCategory` VM reverse byte order requirement.
 - [x] **Integer decoding**: Verified 8-byte LE slicing and CashScript int conversion.
 - [x] **Output structure**: Verified exactly 3 outputs for `pay()`, receipt prefix `0x6a044c53483120` (39 bytes), and dust thresholds.
+- [x] **Outflow calculation**: Verified `outflow = in[0].value - out[0].value` is exact and un-bypassable.
+- [x] **Owner signature hash**: Documented requirement for `SIGHASH_ALL` on owner inputs.
+- [x] **Recipient covenant risk**: Documented configuration risk for allow-listed recipient scripts.
+- [x] **Version & locktime**: Verified `tx.version` >= 2 requirement for BIP68 relative locktimes.
 
 ### SDK Analysis (`src/leash.ts`, `src/state.ts`, `src/receipt.ts`)
 - [x] **`withAutoFee`**: Verified probing logic and transaction size scaling.
@@ -116,3 +163,5 @@ Several low and informational findings were identified in SDK edge cases and tra
 | AL-02, AL-03, AL-05 | No change; defended, covered by tests. |
 | AL-04 | **Fixed.** Reproduced with test `auto-fee re-measures when the change output appears only at the final fee (Jules AL-04)`: the probe at 2000 sats left no change output, the final fee did, and the build failed below 1 sat/byte. `withAutoFee` now re-measures the transaction it returns and adds one output's worth of fee when a cheaper fee creates an extra output. |
 | AL-06 | **Fixed.** `buildWithdraw` forwards stray token UTXOs to a required `ownerTokenAddress` instead of burning them, and refuses without it. Test `withdraw forwards stray tokens to the owner instead of burning them (Jules AL-06)`. |
+| AL-07, AL-10 | No change; defended. |
+| AL-08, AL-09 | Documented as owner-side requirements in README ("Known properties and limits"). |

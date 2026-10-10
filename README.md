@@ -10,9 +10,9 @@ Built for BCH BLAZE 2026. License: MIT.
 
 | Part | State |
 |---|---|
-| `contracts/AgentLeash.cash` (CashScript 0.14) | v0, written 10.10.2026. One automated review (Jules, see `REVIEW.md`: no critical/high/medium findings), not a professional audit. **Not frozen; do not put real money in it.** |
+| `contracts/AgentLeash.cash` (CashScript 0.14) | v0, written 10.10.2026. Two automated review passes (Jules, see `REVIEW.md`: no critical/high/medium findings; two low SDK findings fixed), not a professional audit. **Not frozen; do not put real money in it.** |
 | TypeScript SDK (`src/`) | genesis, pay, top-up, withdraw, receipt + request-hash helpers |
-| Tests (MockNetworkProvider, vitest) | 84 tests: happy paths, 29 attack cases, owner path, genesis, 6-seed property test, plus 29 tests from an external review (`REVIEW.md`) |
+| Tests (MockNetworkProvider, vitest) | 94 tests: happy paths, 29 attack cases, owner path, genesis, 6-seed property test, plus 39 tests from two external review passes (`REVIEW.md`) |
 | Chipnet | full scenario run with real transactions, see below |
 | x402 server (`exact` + `leash` schemes), agent, web UI (WizardConnect) | not started (stage 2) |
 | Mainnet | not deployed (planned after security review and code freeze) |
@@ -65,6 +65,11 @@ Changing them = owner migrates the NFT and funds to a new address.
   i.e. `2 x limit` within a short span. The property test asserts exactly this bound.
 - Unused allowance is not carried over; the new window starts at the first payment after expiry
   (the clock is conservative: it never runs ahead of real time).
+- The owner path trusts the owner's wallet: the owner input must be signed with `SIGHASH_ALL`
+  (the default in CashScript and in common BCH wallets). A `NONE`/`SINGLE`/`ANYONECANPAY` signature
+  on that input would let others rewrite the withdrawal outputs (review AL-08).
+- The allow-list is the owner's trust decision: if an allow-listed script forwards funds to the agent,
+  the contract cannot see it (review AL-09). Use plain P2PKH payees you control or trust.
 - One state UTXO = payments are strictly sequential (unconfirmed chains are fine, `elapsedAdd = 0`).
 - `elapsedAdd` must be < 65536: CSV ignores bits above 16 and treats bit 22 as "time units", so
   without that bound an agent could claim 65536 or `2^22 + 1` "blocks" with a zero-age UTXO. Tests cover both.
