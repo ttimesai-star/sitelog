@@ -1,34 +1,30 @@
-// Mystery shopper: buys from the cheapest well-formed x402 endpoints on Base and records what came back.
+// Mystery shopper: buys from the cheapest well-formed x402 endpoints and records what came back.
 // Hard limits (cannot be raised by flags): <= 0.05 USDC per purchase, <= 2 USDC in total across all runs
-// (summed from the spend log). Only scheme "exact", network Base mainnet, asset USDC.
+// and chains (summed from the spend log). Only scheme "exact", USDC, on one mainnet: Solana or Base.
 // Every step (challenge, payment, response, on-chain receipt) is a signed AgentLog entry.
-// Usage: node src/buyer.mjs [--n 15] [--max-price 0.01] [--dry-run] [--spend-log path]
+// Usage: node src/buyer.mjs [--chain solana|base] [--wallet secrets-file] [--n 1] [--max-price 0.01] [--dry-run]
 import { readFile, appendFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { createPublicClient, http, parseAbi, decodeEventLog } from "viem"
-import { base } from "viem/chains"
-import { mnemonicToAccount } from "viem/accounts"
 import { x402Client, x402HTTPClient } from "@x402/core/client"
-import { ExactEvmScheme } from "@x402/evm/exact/client"
-import { ExactEvmSchemeV1 } from "@x402/evm/v1"
-import { UA, USDC, openLog, ref, secret } from "./lib.mjs"
+import { UA, openLog } from "./lib.mjs"
+import { baseChain, solanaChain } from "./chains.mjs"
 
 const HARD_PER_OP = 0.05
 const HARD_TOTAL = 2.0
-const BASE = "eip155:8453"
-const USDC_BASE = USDC[BASE]
 const args = process.argv.slice(2)
 const opt = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d)
-const N = Number(opt("--n", 15))
+const N = Number(opt("--n", 1))
+const CHAIN = opt("--chain", "solana")
 const MAX_PRICE = Math.min(Number(opt("--max-price", 0.01)), HARD_PER_OP)
 const DRY = args.includes("--dry-run")
 const SPEND_LOG = opt("--spend-log", "../../inbox/startup/delivery_score/spend_log.csv")
 const TIMEOUT = 30_000
 const AGENT = "delivery-score-buyer"
 
-const chain = createPublicClient({ chain: base, transport: http("https://mainnet.base.org") })
-const erc20 = parseAbi(["function balanceOf(address) view returns (uint256)", "event Transfer(address indexed from, address indexed to, uint256 value)"])
+if (!["solana", "base"].includes(CHAIN)) throw new Error("--chain must be solana or base")
+const chain = CHAIN === "base" ? await baseChain({ walletFile: opt("--wallet", "solana_wallet_bounties.json") }) : await solanaChain({ walletFile: opt("--wallet", "delivery_score_solana.json") })
+const NET = chain.network
 
 async function spentSoFar() {
   if (!existsSync(SPEND_LOG)) return 0
@@ -46,16 +42,16 @@ async function spendRow(o) {
   await appendFile(SPEND_LOG, [o.ts, esc(o.endpoint), o.method, o.payTo, o.network, o.amount, o.txid ?? "", o.paid_status, o.delivered, o.run, o.budget ?? o.amount].join(",") + "\n")
 }
 
-// ---------- targets: cheapest well-formed Base/USDC/exact challenges, one per host ----------
+// ---------- targets: cheapest well-formed USDC/exact challenges on the chosen network, one per host ----------
 const probe = JSON.parse(await readFile("data/probe.json", "utf8"))
 const cat = new Map(JSON.parse(await readFile("data/catalog.json", "utf8")).catalog.map((c) => [c.id, c]))
 // Never buy calls with side effects on third parties or money (sending, posting, trading, minting).
-const SIDE_EFFECTS = /send|transfer|swap|mint|deploy|bridge|withdraw|email|mail|sms|tweet|post-?message|order|trade|bet|faucet|payout|airdrop/i
+const SIDE_EFFECTS = /send|transfer|swap|mint|deploy|bridge|withdraw|email|mail|sms|tweet|post-?message|order|trade|bet|faucet|payout|airdrop|buy|purchase|checkout|auth|login|\/pay\b|invoice/i
 const cands = []
 for (const r of probe.results) {
   if (!r.challenge?.ok) continue
   if (SIDE_EFFECTS.test(new URL(r.resource).pathname)) continue
-  const a = r.challenge.accepts.find((x) => x.ok && x.scheme === "exact" && x.network === BASE && String(x.asset).toLowerCase() === USDC_BASE && x.usd !== null && x.usd > 0 && x.usd <= MAX_PRICE)
+  const a = r.challenge.accepts.find((x) => x.ok && x.scheme === "exact" && x.network === NET && chain.sameAsset(x.asset) && x.usd !== null && x.usd > 0 && x.usd <= MAX_PRICE)
   if (a) cands.push({ r, a, c: cat.get(r.id) })
 }
 cands.sort((x, y) => x.a.usd - y.a.usd || (y.c?.quality?.l30DaysTotalCalls ?? 0) - (x.c?.quality?.l30DaysTotalCalls ?? 0))
@@ -68,16 +64,13 @@ for (const t of cands) {
   if (targets.length >= N) break
 }
 const planned = targets.reduce((s, t) => s + t.a.usd, 0)
-console.log(`candidates ${cands.length} (Base USDC exact <= ${MAX_PRICE}); targets ${targets.length}; planned spend ${planned.toFixed(6)} USDC`)
+console.log(`candidates ${cands.length} (${CHAIN} USDC exact <= ${MAX_PRICE}); targets ${targets.length}; planned spend ${planned.toFixed(6)} USDC`)
 for (const t of targets) console.log(`  ${t.a.usd.toFixed(4)}  ${t.r.method} ${t.r.resource}`)
 
 // ---------- wallet and budget guards ----------
-const w = secret("solana_wallet_bounties.json")
-const account = mnemonicToAccount(w.mnemonic, { path: "m/44'/60'/0'/0/0" })
-if (account.address.toLowerCase() !== String(w.evm_address).toLowerCase()) throw new Error("derived EVM address does not match the registry")
-const balance = Number(await chain.readContract({ address: USDC_BASE, abi: erc20, functionName: "balanceOf", args: [account.address] })) / 1e6
+const balance = await chain.balance()
 const spent = await spentSoFar()
-console.log(`wallet ${account.address}: ${balance} USDC on Base; spent so far ${spent.toFixed(6)} of ${HARD_TOTAL}`)
+console.log(`wallet ${chain.wallet}: ${balance} USDC on ${CHAIN}; spent so far ${spent.toFixed(6)} of ${HARD_TOTAL}`)
 
 const { rec } = openLog()
 const runTag = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")
@@ -89,9 +82,9 @@ if (DRY) {
   console.log("dry run: nothing signed, nothing paid")
   stop = true
 } else if (balance < (targets[0]?.a.usd ?? Infinity)) {
-  const l = await rec.log({ agent_id: AGENT, run_id: `buy-${runTag}-guard`, action: "tool.call", tool: "wallet.balance", input: { wallet: account.address, network: BASE, asset: USDC_BASE }, output: { usdc: balance, decision: "stop: no USDC on Base, purchases not attempted" }, note: "balance guard" })
+  const l = await rec.log({ agent_id: AGENT, run_id: `buy-${runTag}-guard`, action: "tool.call", tool: "wallet.balance", input: { wallet: chain.wallet, network: NET, asset: chain.usdc }, output: { usdc: balance, decision: `stop: not enough USDC on ${CHAIN}, purchases not attempted` }, note: "balance guard" })
   await rec.log({ agent_id: AGENT, run_id: l.run_id, action: "run.end" })
-  console.log(`STOP: ${balance} USDC on Base. Nothing bought. Logged as ${l.run_id}#${l.entry.step}`)
+  console.log(`STOP: ${balance} USDC on ${CHAIN}. Nothing bought. Logged as ${l.run_id}#${l.entry.step}`)
   process.exitCode = 2
   stop = true
 }
@@ -102,14 +95,15 @@ const client = new x402Client((v, reqs) => {
   selected = { v, req: reqs[0] }
   return reqs[0]
 })
-client.register(BASE, new ExactEvmScheme(account))
-client.registerV1("base", new ExactEvmSchemeV1(account))
-// Policy: only Base USDC exact within the per-op cap, whatever else the seller offers.
+chain.register(client)
+// Policy: only USDC exact on the chosen network within the per-op cap, whatever else the seller offers.
 client.registerPolicy((v, reqs) =>
   reqs.filter((q) => {
-    const net = v === 1 ? (q.network === "base" ? BASE : q.network) : q.network
-    const amt = Number(v === 1 ? q.maxAmountRequired : q.amount) / 1e6
-    return q.scheme === "exact" && net === BASE && String(q.asset).toLowerCase() === USDC_BASE && amt > 0 && amt <= MAX_PRICE
+    const net = v === 1 ? (q.network === chain.v1Name ? NET : q.network) : q.network
+    const raw = String(v === 1 ? q.maxAmountRequired : q.amount)
+    if (!/^\d+$/.test(raw)) return false
+    const amt = Number(raw) / 1e6
+    return q.scheme === "exact" && net === NET && chain.sameAsset(q.asset) && amt > 0 && amt <= MAX_PRICE && chain.extraOk(q)
   }),
 )
 const httpc = new x402HTTPClient(client)
@@ -144,26 +138,6 @@ function shapeMatch(example, body) {
   return keys.filter((k) => k in inner).length / keys.length
 }
 
-async function receipt(txid, payTo, amount) {
-  try {
-    const r = await chain.waitForTransactionReceipt({ hash: txid, timeout: 60_000 })
-    const transfers = r.logs
-      .filter((l) => l.address.toLowerCase() === USDC_BASE)
-      .map((l) => {
-        try {
-          return decodeEventLog({ abi: erc20, ...l }).args
-        } catch {
-          return null
-        }
-      })
-      .filter(Boolean)
-    const ours = transfers.find((x) => x.from.toLowerCase() === account.address.toLowerCase() && x.to.toLowerCase() === String(payTo).toLowerCase())
-    return { status: r.status, block: Number(r.blockNumber), transfer_found: !!ours, value: ours ? Number(ours.value) / 1e6 : null, amount_expected: Number(amount) / 1e6 }
-  } catch (e) {
-    return { status: "unknown", error: String(e.message).slice(0, 200) }
-  }
-}
-
 for (const t of stop ? [] : targets) {
   if (total + t.a.usd > HARD_TOTAL) {
     console.log(`budget: ${total.toFixed(6)} + ${t.a.usd} would pass ${HARD_TOTAL}, stopping`)
@@ -173,7 +147,7 @@ for (const t of stop ? [] : targets) {
   const { url, init } = reqInit(t)
   const log = (tool, input, output, note) => rec.log({ agent_id: AGENT, run_id: run, action: "tool.call", tool, input, output, note })
   let sentUsd = 0
-  const row = { ts: new Date().toISOString(), endpoint: t.r.resource, method: t.r.method, payTo: t.a.payTo, network: BASE, amount: 0, paid_status: "not_paid", delivered: "n/a", run }
+  const row = { ts: new Date().toISOString(), endpoint: t.r.resource, method: t.r.method, payTo: t.a.payTo, network: NET, amount: 0, paid_status: "not_paid", delivered: "n/a", run }
   try {
     const first = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT) })
     const firstBody = await first.text()
@@ -194,7 +168,7 @@ for (const t of stop ? [] : targets) {
     const usd = Number(amountRaw) / 1e6
     if (!(usd > 0 && usd <= MAX_PRICE) || total + usd > HARD_TOTAL) throw new Error(`guard: amount ${usd} outside limits`)
     const headers = httpc.encodePaymentSignatureHeader(payload)
-    await log("x402.pay", { url, accepted: chosen, from: account.address }, { header_names: Object.keys(headers), amount_usdc: usd }, `paying ${usd} USDC to ${chosen?.payTo}`)
+    await log("x402.pay", { url, accepted: chosen, from: chain.wallet }, { header_names: Object.keys(headers), amount_usdc: usd }, `paying ${usd} USDC to ${chosen?.payTo}`)
     sentUsd = usd // from here on a signed payment has left the process
     const t0 = performance.now()
     let paid, body = "", err = null
@@ -223,8 +197,8 @@ for (const t of stop ? [] : targets) {
       shape_match: shapeMatch(t.c?.exampleOutput, body),
     }
     await log("x402.paid_response", { url }, out, `paid response ${out.status ?? err}`)
-    const chainFact = txid ? await receipt(txid, chosen?.payTo, amountRaw) : { status: "no txid in PAYMENT-RESPONSE" }
-    await log("chain.receipt", { txid, network: BASE }, chainFact, "on-chain check of the payment")
+    const chainFact = txid ? await chain.receipt(txid, chosen.payTo, amountRaw) : { status: "no txid in PAYMENT-RESPONSE" }
+    await log("chain.receipt", { txid, network: NET }, chainFact, "on-chain check of the payment")
     const charged = chainFact.transfer_found ? chainFact.value : 0
     // A signed authorization may still be settled later: unless the transfer is confirmed, the signed
     // amount counts against the budget.

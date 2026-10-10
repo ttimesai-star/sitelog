@@ -18,9 +18,11 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@solana/kit": "^5.5.1",
     "@x402/core": "^2.28.0",
     "@x402/evm": "^2.28.0",
     "@x402/fetch": "^2.28.0",
+    "@x402/svm": "^2.28.0",
     "agentlog": "github:ttimesai-star/agentlog",
     "viem": "^2.57.4"
   },

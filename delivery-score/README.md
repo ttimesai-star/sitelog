@@ -33,13 +33,13 @@ Run of 10 October 2026 (UTC), from one location. Full numbers: [`data/summary.js
 | Challenge also offers a testnet | 733 |
 | Accept entries with a decimal `amount` ("0.01" instead of base units) | 194 (other accepts of the same challenge were valid) |
 | Valid offers by network | Base 14 266, Solana 484, Base Sepolia 146, others 64 |
-| Price (USDC offers) | min 0.001, median 0.01, p75 0.02, max 5 000; 9 494 at 0.01 or less |
+| Price (USDC offers) | min 0.001, median 0.01, p75 0.02, max 5 000; 9 820 at 0.01 or less (14 899 offers priced in USDC) |
 | Median time to a 402 | 2.3 s |
 | Hosts with no valid 402 on any probed endpoint | 86 of 2 185 |
 | Paid purchases | 0: the buyer wallet had no USDC on Base, the balance guard stopped the run (logged, see below) |
 | AgentLog | 2 186 runs, 19 871 signed entries, all verify `intact` |
 
-**What this does and does not show.** The Bazaar catalogue is fed by facilitator activity: 32 511 of 32 585 entries had paid calls in the last 30 days. It is therefore a list of endpoints that recently worked, and almost all of them still answer a correct 402. Claims that most x402 endpoints are dead come from broader indexes. Whether these endpoints deliver after payment is the open question, and the mystery shopper is built for it; in this run it did not spend.
+**What this does and does not show.** The Bazaar catalogue is fed by facilitator activity: 32 511 of 32 585 entries had paid calls in the last 30 days. It is therefore a list of endpoints that recently worked, and almost all of them still answer a correct 402. The figure of "about 70 % of x402 endpoints are dead, malformed or fraudulent", quoted by scanner projects, refers to broader indexes that list every endpoint ever seen; it does not describe the Bazaar catalogue, where 98.9 % answered and 96.4 % returned a valid 402 on this run. The findings that do stand out here: 70 endpoints served a 2xx result without any payment, 200 endpoints (31 hosts) asked for payment to a different payTo than their Bazaar listing, and 393 asked a different price than listed. Whether these endpoints deliver after payment is the open question, and the mystery shopper is built for it; in this run it did not spend.
 
 Examples (each line is the signed record's content; `run#step` is its AgentLog reference):
 
@@ -51,6 +51,28 @@ Examples (each line is the signed record's content; `run#step` is its AgentLog r
 - Buyer: `buy-202610100747-guard#1`, wallet balance 0 USDC on Base, "stop: purchases not attempted". Export: [`data/export/buy-202610100747-guard.json`](data/export/buy-202610100747-guard.json).
 
 The signed log is [`data/agentlog.db.gz`](data/agentlog.db.gz) (SQLite, gzip). `gunzip -k data/agentlog.db.gz && DS_AGENT_ADDRESS=0x9884b617AA10fA05159FfC3A148AF69d3788c4BC node src/verify.mjs` re-verifies every run; the address is the Delivery Score agent key, which holds no funds.
+
+## Neutrality rules
+
+A score is only worth something if neither side can buy it.
+
+- **Who it is for.** The first users are on the buyer's side: agent marketplaces, teams that run paying agents, and arbiters of disputes. They need to know before paying; sellers are the ones being checked.
+- **Sellers.** A seller may run a private test of its own endpoint (same probe, same checks) to fix problems. A private test never enters, changes or removes anything in the public index.
+- **Nothing is for sale.** Removing a record or raising a score cannot be bought. A score changes only when a new probe or purchase produces new facts; the old records stay in the signed log.
+- **Facts only.** The index publishes what was sent and what came back, with a time, a transaction id for payments, and the AgentLog record behind it. No labels: never "scam", "fraud" or similar.
+- **Corrections.** A seller who disputes a fact gets the signed record and its evidence; if a probe was wrong (for example, our input was invalid), the next probe's result is published next to it, not instead of it.
+
+## Legal checks
+
+Before any purchase, the terms of the facilitator that settles the buyer's payment are checked for: Belarus, sanction, embargo, "arms embargo", HM Treasury, OFAC, restricted territory. If a facilitator excludes the buyer's jurisdiction, purchases go only through facilitators that do not, or are not made. Quotes are verbatim; status as of 10 October 2026.
+
+| Facilitator / source | Status | Verbatim |
+|---|---|---|
+| Coinbase CDP facilitator, x402 FAQ (docs.cdp.coinbase.com/x402/support/faq) | read | "Every payment is screened against OFAC sanctions lists and Know Your Transaction (KYT) risk signals before it settles. A declined payment fails with kyt_risk_detected, so the buyer never loses funds and the seller never delivers the resource. Screening runs at both verification and settlement, and checks the payer and the recipient." |
+| Coinbase Developer Platform Terms of Service (coinbase.com/legal/developer-platform/terms-of-service) | **not read**: HTTP 403 (Cloudflare challenge) to both a plain request and a headless browser | none yet |
+| Other facilitators named in challenges (by `extra.feePayer` / facilitator URL) | not checked yet | none yet |
+
+Until the CDP terms and the facilitator of each target are read and quoted here, the buyer is not run. In this run, nothing was bought.
 
 ## Method
 
@@ -70,9 +92,9 @@ The free Coinbase CDP Bazaar discovery API (`/platform/v2/x402/discovery/resourc
 
 ### Mystery shopper (`src/buyer.mjs`)
 
-- Targets: endpoints whose live challenge offers `exact` USDC on Base at or below 0.01 USDC, cheapest first, one per host.
+- Targets: endpoints whose live challenge offers `exact` USDC on the chosen mainnet (`--chain solana`, default, or `--chain base`) at or below 0.01 USDC, cheapest first, one per host; paths that suggest side effects (send, transfer, swap, order, email, buy, auth, pay and similar) are skipped. On Solana the facilitator must be the fee payer.
 - Limits written in code, not flags: at most 0.05 USDC per purchase and 2 USDC in total across all runs (summed from the spend log). A payment policy registered in the x402 client drops every other offer the seller makes.
-- Uses the official `@x402/core` and `@x402/evm` clients. For each purchase, signed AgentLog entries: the challenge, the payment (chosen requirement, amount), the paid response (status, latency, size, body hash, preview, `PAYMENT-RESPONSE`), and the on-chain receipt (the USDC `Transfer` from our wallet to `payTo` is looked up in the transaction receipt, not taken from the seller's word).
+- Uses the official `@x402/core` and `@x402/evm` clients. For each purchase, signed AgentLog entries: the challenge, the payment (chosen requirement, amount), the paid response (status, latency, size, body hash, preview, `PAYMENT-RESPONSE`), and the on-chain receipt (Base: the USDC `Transfer` from our wallet to `payTo` in the receipt; Solana: the USDC token-balance deltas of our wallet and `payTo` in the confirmed transaction; never the seller's word).
 - Spend log: one CSV row per attempt with the tx id.
 
 ### Score (`src/score.mjs`)

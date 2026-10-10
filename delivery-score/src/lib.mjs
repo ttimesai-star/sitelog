@@ -17,7 +17,7 @@ export const USDC = {
   "eip155:1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
   "eip155:10": "0x0b2c639c533813f4aa9d7837caf62653d097ff85",
   "eip155:43114": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
-  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "EPjFWdd5AufqSSqeM2qJ1zrHzbMMrX7KpJ7GdbW4fzG",
+  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 }
 // x402 v1 used plain network names.

@@ -15,7 +15,7 @@ export const USDC: Record<string, string> = {
   "eip155:137": "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
   "eip155:42161": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
   "eip155:1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "EPjFWdd5AufqSSqeM2qJ1zrHzbMMrX7KpJ7GdbW4fzG",
+  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
 }
 const V1: Record<string, string> = {
