@@ -10,6 +10,8 @@
 //   agentlog verify-file run.json                                verify an export offline (no network)
 //   agentlog retain --agent ID --run ID --signer 0x.. --days 365 keep a run alive (any funded wallet)
 //   agentlog hash   [--json JSON | --file F]                     the hash agentlog would store for a value
+//   agentlog dispute --export run.json [--operator op.json] [--client cl.json] [--steps 2,4] [--excerpts] [--out report.json]
+//                                                                replay a dispute offline: whose raw data matches each step
 //
 // Writes need a funded Tiramisu key in env AGENTLOG_PRIVATE_KEY (never on the command line).
 // start/step/seal keep the run's head in .agentlog/<agent>__<run>.json, so separate processes
@@ -22,7 +24,8 @@ import { join } from "node:path"
 import { http } from "viem"
 import type { Hex } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
-import { AgentLog, exportBundle, hashValue, listRuns, loadRun, resumeState, retainRun, verifyExport } from "./src/index.ts"
+import { createHash } from "node:crypto"
+import { AgentLog, exportBundle, hashValue, listRuns, loadRun, replayDispute, resumeState, retainRun, verifyExport } from "./src/index.ts"
 import type { Landed, RunReport } from "./src/index.ts"
 
 const EXPLORER = "https://tiramisu.explorer.arkiv.network"
@@ -32,6 +35,11 @@ const pos: string[] = []
 for (let i = 0; i < rest.length; i++) {
   if (rest[i].startsWith("--")) opt[rest[i].slice(2)] = rest[i + 1] !== undefined && !rest[i + 1].startsWith("--") ? rest[++i] : "true"
   else pos.push(rest[i])
+}
+const readParty = (file: string | undefined) => {
+  if (!file) return undefined
+  const bytes = readFileSync(file)
+  return { file: JSON.parse(bytes.toString("utf8")), name: file.split(/[\\/]/).pop(), sha256: `0x${createHash("sha256").update(bytes).digest("hex")}` }
 }
 const need = (...names: string[]) => names.forEach((n) => { if (!opt[n]) throw new Error(`--${n} is required`) })
 const pub = createPublicClient({ chain: tiramisu, transport: http(undefined, { retryCount: 1 }) })
@@ -145,12 +153,33 @@ async function main() {
       console.log(`${keys.length} entries extended to ${opt.days} days by ${acct.address}\n${txs.map((t) => `  ${EXPLORER}/tx/${t}`).join("\n")}`)
       break
     }
+    case "dispute": {
+      need("export")
+      const bundle = JSON.parse(readFileSync(opt.export, "utf8"))
+      const steps = opt.steps ? opt.steps.split(",").map(Number) : undefined
+      const r = await replayDispute(bundle, { operator: readParty(opt.operator), client: readParty(opt.client), steps, includeExcerpts: opt.excerpts === "true" })
+      console.log(`run ${r.run.run_id} of ${r.run.agent_id}: chain ${r.run.chain_verdict.toUpperCase()}, ${r.run.steps} steps, signer ${r.run.signer}`)
+      for (const w of r.warnings) console.log(`  ! ${w}`)
+      for (const x of r.steps.filter((y) => y.disputed)) {
+        console.log(`  step ${x.step} ${x.action}${x.tool ? " " + (x.tool_revealed ?? x.tool) : ""}: ${x.verdict.toUpperCase()}
+    ${x.finding}`)
+        for (const p of ["operator", "client"] as const) if (x[p].claim) console.log(`    ${p} claims: ${x[p].claim}`)
+      }
+      const s = r.summary
+      console.log(`disputed ${s.disputed}: operator ${s.operator}, client ${s.client}, both ${s.both}, neither ${s.neither}, no anchor ${s.no_anchor}
+report_hash ${r.report_hash}`)
+      if (opt.out) {
+        writeFileSync(opt.out, JSON.stringify(r, null, 1))
+        console.log(`report written to ${opt.out}`)
+      }
+      break
+    }
     case "hash": {
       console.log(await hashValue(parseJson(opt.json, opt.file)))
       break
     }
     default:
-      console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 17).join("\n"))
+      console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 19).join("\n"))
   }
 }
 

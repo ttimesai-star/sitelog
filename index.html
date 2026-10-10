@@ -18,7 +18,7 @@
       <h1>SiteLog <span class="muted small">Agent Action Log</span></h1>
       <p class="tag">A tamper-evident, censorship-resistant audit trail for AI agents, on <a href="https://arkiv.network">Arkiv</a>. Every LLM call and tool call is a signed, hash-chained, readonly entity. Anyone can check the chain in this page, with no server of ours.</p>
     </div>
-    <nav class="nav"><a href="#run">Run</a> <a href="#verify">Verify a file</a> <a href="site.html">Construction use case</a> <a href="https://github.com/ttimesai-star/sitelog">Source</a></nav>
+    <nav class="nav"><a href="#run">Run</a> <a href="#verify">Verify a file</a> <a href="#dispute">Dispute replay</a> <a href="#offchain">Details off chain</a> <a href="#euaiact">EU AI Act art. 12</a> <a href="site.html">Construction use case</a> <a href="https://github.com/ttimesai-star/sitelog">Source</a></nav>
   </header>
 
   <main>
@@ -78,6 +78,70 @@
       <p>Drop an <code>agentlog-export/v1</code> file (the button above makes one, so does <code>agentlog verify --out</code>). The check runs in this tab with no network: it recomputes every hash, recovers every signature and follows the links from step 0 to the seal. It still works after the Arkiv entities expire.</p>
       <div class="row"><label>Export file <input type="file" id="vfile" accept=".json,application/json" /></label></div>
       <div id="vout"></div>
+    </section>
+
+    <section class="card" id="dispute">
+      <h2>Dispute replay <span class="muted small">the operator and the client, one run, one report</span></h2>
+      <p>The operator of an agent and its client disagree about what the agent did. Neither can change the run on Arkiv, so both accept it as the common record. Each side brings its own private file of raw data: the operator its evidence file, the client the copies it received, each with an optional claim per step. The page checks every step against what the agent hashed and signed, and gives a verdict for each disputed step.</p>
+      <div class="dcontrols">
+        <div class="row">
+          <label>Run record <select id="dSource"><option value="loaded">the run loaded above (from Arkiv)</option><option value="file">an export file (offline)</option></select></label>
+          <label id="dExportWrap" class="hidden">Export file <input type="file" id="dExport" accept=".json,application/json" /></label>
+          <label>Operator's file <input type="file" id="dOperator" accept=".json,application/json" /></label>
+          <label>Client's file <input type="file" id="dClient" accept=".json,application/json" /></label>
+        </div>
+        <div class="row"><label class="check"><input type="checkbox" id="dExcerpts" /> put short excerpts of the raw outputs into the report (off: the report carries hashes and verdicts only)</label></div>
+        <div class="row">
+          <button id="dRun">Replay the dispute</button>
+          <button id="dDemo" class="ghost">Load the demo dispute</button>
+          <button id="dJson" class="ghost" disabled>Download report (JSON)</button>
+          <button id="dPrint" class="ghost" disabled>Print or save as PDF</button>
+        </div>
+        <p class="hint">Files you choose here are read in this tab and never uploaded: the replay makes no network request (the demo button fetches two public demo files from this site). Same check from a terminal: <code>node agentlog/cli.ts dispute --export run.json --operator op.json --client cl.json --out report.json</code>.</p>
+        <p class="hint" id="dStatus"></p>
+      </div>
+      <div id="dOut"></div>
+    </section>
+
+    <section class="card" id="offchain">
+      <h2>Details off chain <span class="muted small">only hashes on Arkiv, the record stays with you</span></h2>
+      <p>Prompts, model replies and tool results can hold customer data. They never go on chain. Arkiv holds what is needed to prove the record was not changed: the step, the action, the hash links, the hashes of input and output, and the agent's signature. The operator keeps the raw record and shows it only to the other party in a dispute or to an auditor, who check it against Arkiv themselves.</p>
+      <div class="split">
+        <div><h3>On Arkiv, public <span class="muted small">step 4 of the demo run</span></h3><pre id="ocPublic" class="code">Press the button below.</pre></div>
+        <div><h3>With the operator, private <span class="muted small">the same step, raw</span></h3><pre id="ocPrivate" class="code">…</pre></div>
+      </div>
+      <div class="row"><button id="ocShow" class="ghost">Show both sides of step 4</button></div>
+      <h3>Strict mode: <code>detailsOffChain: true</code></h3>
+      <p>A plain hash of a short value can be guessed: anyone can hash <code>200</code>, <code>[]</code> or a likely URL and compare. In strict mode every step gets a fresh random salt; input and output hashes commit to the salt and the value, the tool or model name is replaced by a commitment (<code>h:…</code>), and the public note is empty. The salt stays in the evidence file with the raw data. From the chain alone one learns only that step N was a <code>tool.call</code> at time T, linked and signed. The demo run above was written in the plain mode, so its notes and tool names are readable.</p>
+      <div class="row"><button id="ocStrict" class="ghost">Write a strict step in this tab (throwaway key, no network)</button></div>
+      <pre id="ocStrictOut" class="code hidden"></pre>
+      <h3>Same direction as Verifiable Agent Arbiter, different trade-offs</h3>
+      <p>On 6 October 2026 Google Cloud and Mysten Labs announced Verifiable Agent Arbiter: detailed agent telemetry stays private in customer-controlled Google Cloud Storage, cryptographic proofs go to Walrus and are coordinated on Sui, and two organisations can replay a disputed workflow against the same receipts over the A2A protocol (<a href="https://cryptobriefing.com/mysten-labs-google-cloud-verifiable-agent-arbiter/" target="_blank" rel="noopener">report</a>). SiteLog works the same way at its core and differs here:</p>
+      <ul class="why">
+        <li><b>Open source, MIT.</b> The writer, the verifier, the dispute replay and this page are in the repository. Read them, fork them, run them yourself.</li>
+        <li><b>Any wallet, any stack.</b> An entry is signed with a plain EVM key (EIP-191) and stored as an Arkiv entity. Anything that can sign a message can write a run, through the TypeScript SDK or the CLI; any wallet can keep a run alive.</li>
+        <li><b>No cloud tied in.</b> The private record is a JSON file the operator keeps wherever it wants. A dispute needs the public run and the two parties' files, nothing else.</li>
+        <li><b>Checked without our server.</b> This page and the CLI read only the public Arkiv RPC; a signed export verifies offline, after the entities expire.</li>
+      </ul>
+    </section>
+
+    <section class="card" id="euaiact">
+      <h2>EU AI Act, Article 12 (record-keeping) <span class="muted small">what each field covers</span></h2>
+      <p class="hint">A map of the log's fields to the text of Regulation (EU) 2024/1689, quoted from the official text on <a href="https://eur-lex.europa.eu/eli/reg/2024/1689/oj" target="_blank" rel="noopener">EUR-Lex</a>. Not legal advice and not a compliance claim: Article 12 applies to high-risk AI systems, and whether a system is high-risk and whether its logs are adequate is for its provider, its deployer and their counsel to decide.</p>
+      <div class="tablewrap"><table class="steps aiact">
+        <thead><tr><th>Text of the Act</th><th>What the Agent Action Log records</th><th>What it does not do</th></tr></thead>
+        <tbody>
+          <tr><td><b>12(1)</b> “High-risk AI systems shall technically allow for the automatic recording of events (logs) over the lifetime of the system.”</td><td>Every call made through <code>wrap()</code> or <code>record()</code> becomes an entry as it happens: <code>run.start</code>, <code>llm.call</code>, <code>tool.call</code>, <code>tool.error</code>, <code>run.end</code>. Each is hash-linked to the previous one and signed.</td><td>Only calls routed through the SDK or CLI are logged. Coverage over the system's lifetime is the integrator's job.</td></tr>
+          <tr><td><b>12(2)(a)</b> logs “shall enable the recording of events relevant for: (a) identifying situations that may result in the high-risk AI system presenting a risk within the meaning of Article 79(1) or in a substantial modification”</td><td><code>tool.error</code> entries; the model name of every <code>llm.call</code> (a model change is visible); forks, gaps and edits found by the verifier; runs that stop without a seal show as OPEN.</td><td>The log records events; it does not decide what counts as a risk.</td></tr>
+          <tr><td><b>12(2)(b)</b> “facilitating the post-market monitoring referred to in Article 72”</td><td>Agent, run, step, action, tool and time are typed Arkiv attributes, so queries across runs (“every <code>http_get</code> of this agent”) need no indexer. Signed exports for archiving.</td><td>No monitoring plan or dashboards.</td></tr>
+          <tr><td><b>12(2)(c)</b> “monitoring the operation of high-risk AI systems referred to in Article 26(5)”</td><td>Per-run verification in a browser or the CLI, by the deployer or anyone it trusts, from the public RPC; the dispute replay for a disagreement about one run.</td><td>No alerting.</td></tr>
+          <tr><td><b>12(3)</b> applies only to systems of Annex III point 1(a) (remote biometric identification); listed here as a checklist. “(a) recording of the period of each use of the system (start date and time and end date and time of each use)”</td><td><code>timestamp</code> of <code>run.start</code> and <code>run.end</code> (the agent's clock) and the block number of each entity (the chain's clock).</td><td>The agent's clock is not trusted; the block number is.</td></tr>
+          <tr><td><b>12(3)(b)</b> “the reference database against which input data has been checked by the system”</td><td>The <code>tool</code> name and <code>input_hash</code> of the lookup call; the raw query in the off-chain evidence.</td><td>Only if the lookup goes through a logged tool.</td></tr>
+          <tr><td><b>12(3)(c)</b> “the input data for which the search has led to a match”</td><td><code>output_hash</code> of that call on chain; the result itself in the off-chain evidence.</td><td>The content is only as complete as what the tool returned.</td></tr>
+          <tr><td><b>12(3)(d)</b> “the identification of the natural persons involved in the verification of the results, as referred to in Article 14(5)”</td><td>Not recorded by default. A reviewer's decision can be logged as a step (for example <code>action: "human.review"</code>) with the identity in the off-chain record and only its hash on chain.</td><td>No built-in reviewer identity: personal data must not go on chain.</td></tr>
+          <tr><td><b>Art. 19(1)</b> and <b>26(6)</b>: logs kept “for a period appropriate to the intended purpose of the high-risk AI system, of at least six months”</td><td>The seal moves every entry of a run to 180 days; anyone can extend further (<code>agentlog retain --days N</code>); a signed export stays verifiable after expiry.</td><td>180 days can be shorter than six calendar months: set <code>sealedDays</code> to 186 or more, or extend with <code>retain</code>.</td></tr>
+        </tbody>
+      </table></div>
     </section>
 
     <section class="card">

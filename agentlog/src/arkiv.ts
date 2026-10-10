@@ -14,7 +14,7 @@ import { ExpirationTime, jsonToPayload } from "@arkiv-network/sdk/utils"
 import type { PublicArkivClient, WalletArkivClient } from "@arkiv-network/sdk"
 import type { Hex, LocalAccount } from "viem"
 import {
-  ACTION_END, ACTION_START, GENESIS, buildEntry, canonicalJson, checkId, hashValue, verifyRun,
+  ACTION_END, ACTION_START, GENESIS, buildEntry, canonicalJson, checkId, commitTool, commitValue, hashValue, newSalt, verifyRun,
 } from "./core.ts"
 import type { Entry, ExportBundle, ExportedEntry, RunReport } from "./core.ts"
 
@@ -72,6 +72,12 @@ export interface AgentLogOptions {
   publicClient?: PublicArkivClient
   /** Keep raw inputs and outputs in memory for a local evidence file (never sent to Arkiv). */
   keepRaw?: boolean
+  /**
+   * Details off chain (the "hashes only" mode): each step gets a random salt, input and output hashes
+   * become salted commitments, the tool name is replaced by a commitment and the public note is
+   * dropped. Raw data, plain tool names and salts exist only in evidence(). Requires keepRaw.
+   */
+  detailsOffChain?: boolean
   /** Continue a run another process started (see resumeState). */
   resume?: { step: number; prev: Hex; keys?: Hex[] }
 }
@@ -80,7 +86,7 @@ export interface Landed {
   entry: Entry
   entity_key?: Hex
   tx?: Hex
-  raw?: { input: unknown; output: unknown }
+  raw?: { input: unknown; output: unknown; salt?: string; tool?: string; note?: string }
 }
 
 /**
@@ -92,7 +98,7 @@ export interface Landed {
  *   await log.seal({ result })
  */
 export class AgentLog {
-  readonly opts: Required<Omit<AgentLogOptions, "custodian" | "resume" | "publicClient">> & { custodian?: Hex; publicClient?: PublicArkivClient }
+  readonly opts: Required<Omit<AgentLogOptions, "custodian" | "resume" | "publicClient" | "detailsOffChain">> & { custodian?: Hex; publicClient?: PublicArkivClient; detailsOffChain: boolean }
   readonly entries: Landed[] = []
   private pending: Landed[] = []
   private step = 0
@@ -107,7 +113,8 @@ export class AgentLog {
     checkId(o.runId, "runId")
     if (o.account.address.toLowerCase() !== String(o.wallet.account?.address ?? "").toLowerCase()) throw new Error("account must be the wallet's account")
     const { resume, ...rest } = o
-    this.opts = { batchSize: 1, stepDays: LIFETIME.step, sealedDays: LIFETIME.sealed, keepRaw: true, ...rest }
+    this.opts = { batchSize: 1, stepDays: LIFETIME.step, sealedDays: LIFETIME.sealed, keepRaw: true, ...rest, detailsOffChain: Boolean(rest.detailsOffChain) }
+    if (this.opts.detailsOffChain && !this.opts.keepRaw) throw new Error("detailsOffChain needs keepRaw: without the evidence file nobody could ever open the commitments")
     if (resume) {
       this.step = resume.step
       this.prev = resume.prev
@@ -126,13 +133,16 @@ export class AgentLog {
   record(r: { action: string; tool?: string; input?: unknown; output?: unknown; note?: string }): Promise<Landed> {
     return this.serial(async () => {
       if (this.sealed) throw new Error("run is sealed")
-      const entry = await buildEntry(
-        { agent_id: this.opts.agentId, run_id: this.opts.runId, step: this.step, action: r.action, tool: r.tool, input_hash: await hashValue(r.input), output_hash: await hashValue(r.output), prev_entry_hash: this.prev, note: r.note },
-        this.opts.account,
-      )
       // A snapshot, not a reference: agents mutate their message arrays after the call, and the
       // evidence must hold exactly the bytes that were hashed.
-      const landed: Landed = { entry, raw: this.opts.keepRaw ? { input: snapshot(r.input), output: snapshot(r.output) } : undefined }
+      const input = snapshot(r.input)
+      const output = snapshot(r.output)
+      const c = await this.commit(r.tool ?? "", input, output, r.note)
+      const entry = await buildEntry(
+        { agent_id: this.opts.agentId, run_id: this.opts.runId, step: this.step, action: r.action, tool: c.tool, input_hash: c.input_hash, output_hash: c.output_hash, prev_entry_hash: this.prev, note: c.note },
+        this.opts.account,
+      )
+      const landed: Landed = { entry, raw: this.opts.keepRaw ? c.raw : undefined }
       this.step += 1
       this.prev = entry.entry_hash
       this.entries.push(landed)
@@ -140,6 +150,21 @@ export class AgentLog {
       if (this.pending.length >= this.opts.batchSize) await this.flushNow()
       return landed
     })
+  }
+
+  /** What goes on chain for one step, and what stays in the evidence file. */
+  private async commit(tool: string, input: unknown, output: unknown, note?: string) {
+    if (!this.opts.detailsOffChain) {
+      return { tool, note: note ?? "", input_hash: await hashValue(input), output_hash: await hashValue(output), raw: { input, output } as Landed["raw"] }
+    }
+    const salt = newSalt()
+    return {
+      tool: await commitTool(tool, salt),
+      note: "",
+      input_hash: await commitValue(input, salt),
+      output_hash: await commitValue(output, salt),
+      raw: { input, output, salt, tool, ...(note ? { note } : {}) } as Landed["raw"],
+    }
   }
 
   start(input: unknown, note = "run started") {
@@ -218,11 +243,12 @@ export class AgentLog {
       if (this.sealed) throw new Error("already sealed")
       const earlier = () => [...this.priorKeys, ...this.entries.filter((l) => l.entity_key).map((l) => l.entity_key as Hex)]
       const input = { steps: this.step, head: this.prev }
+      const c = await this.commit("", input, snapshot(output), note)
       const entry = await buildEntry(
-        { agent_id: this.opts.agentId, run_id: this.opts.runId, step: this.step, action: ACTION_END, tool: "", input_hash: await hashValue(input), output_hash: await hashValue(output), prev_entry_hash: this.prev, note },
+        { agent_id: this.opts.agentId, run_id: this.opts.runId, step: this.step, action: ACTION_END, tool: "", input_hash: c.input_hash, output_hash: c.output_hash, prev_entry_hash: this.prev, note: c.note },
         this.opts.account,
       )
-      const landed: Landed = { entry, raw: this.opts.keepRaw ? { input, output } : undefined }
+      const landed: Landed = { entry, raw: this.opts.keepRaw ? c.raw : undefined }
       this.step += 1
       this.prev = entry.entry_hash
       this.entries.push(landed)

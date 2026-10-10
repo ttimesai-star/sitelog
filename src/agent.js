@@ -7,6 +7,7 @@ import { toRpcSelect } from "@arkiv-network/sdk/query"
 import { http } from "viem"
 import { exportBundle, hashValue, listRuns, loadRun, runQuery, verifyExport } from "../agentlog/src/index.ts"
 import { EXPLORER, RPC_HTTP, creationTxs } from "./lib/sitelog.js"
+import { initDispute, initOffchain } from "./dispute.js"
 
 export const DEMO_AGENT = "release-checker"
 export const DEMO_SIGNER = "0x3ad7cD724fF2c472aC5Ca5a0F0edbd6880d2c546"
@@ -229,5 +230,10 @@ $("load").addEventListener("click", () => {
   load()
 })
 $("copyCurl").addEventListener("click", () => navigator.clipboard?.writeText($("curl").textContent))
+
+// The dispute replay and the off-chain view use the run already loaded: no extra Arkiv query (F7).
+const currentBundle = () => (state.run?.entries.length ? JSON.parse(json(bundle())) : null)
+initDispute({ currentBundle, demoRun: DEMO_RUN })
+initOffchain({ currentBundle, demoRun: DEMO_RUN })
 
 load()
