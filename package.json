@@ -1,0 +1,30 @@
+{
+  "name": "agentleash-bch",
+  "version": "0.1.0",
+  "description": "Spending leash for AI agents on Bitcoin Cash: CashScript covenant + TypeScript SDK",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "build": "npm run compile && tsc",
+    "compile": "cashc contracts/AgentLeash.cash -f ts -o artifacts/AgentLeash.artifact.ts && cashc contracts/AgentLeash.cash -o artifacts/AgentLeash.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "chipnet": "tsx scripts/chipnet.ts"
+  },
+  "author": "ttimesai-star",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@bitauth/libauth": "^3.1.0-next.8",
+    "cashscript": "^0.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "cashc": "^0.14.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

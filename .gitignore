@@ -1,0 +1,7 @@
+node_modules/
+dist/
+scripts/chipnet-state*.json
+*.log
+.env
+local/
+.jules_brief*

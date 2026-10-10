@@ -1,0 +1,253 @@
+import { binToHex, cashAddressToLockingBytecode, hexToBin, secp256k1, hash160 } from '@bitauth/libauth';
+import {
+  Contract, SignatureTemplate, TransactionBuilder,
+  type NetworkProvider, type Unlocker, type SpendableUtxo as Utxo, type Output,
+} from 'cashscript';
+import artifact from '../artifacts/AgentLeash.artifact.js';
+import { decodeState, encodeState, nextState, type LeashState } from './state.js';
+import { receiptLockingBytecode } from './receipt.js';
+
+export const MIN_STATE_VALUE = 1000n;
+export const DUST = 546n;
+
+/** Build with a provisional fee, measure the signed size, rebuild with size * feeRate (+ margin). */
+export function withAutoFee(build: (fee: bigint) => TransactionBuilder, feeRate = 1, margin = 5n): { builder: TransactionBuilder; fee: bigint } {
+  const probe = build(2000n).build();
+  const size = BigInt(probe.length / 2);
+  const fee = BigInt(Math.ceil(Number(size) * feeRate)) + margin;
+  return { builder: build(fee), fee };
+}
+
+export interface LeashParams {
+  /** Category of the state NFT, hex as shown by wallets / CashScript (= genesis input txid). */
+  stateCategory: string;
+  /** hash160 of the agent's compressed public key. */
+  agentPkh: Uint8Array;
+  /** Locking bytecode (P2PKH, 25 bytes) of the owner. */
+  ownerLock: Uint8Array;
+  /** 1 to 3 allow-listed recipient locking bytecodes. */
+  allow: Uint8Array[];
+  /** Satoshis per window. */
+  limit: bigint;
+  /** Window length in blocks (1..65535). */
+  period: bigint;
+  /** Max miner fee per agent payment, satoshis. */
+  maxFee: bigint;
+}
+
+/** Introspection returns the category in VM byte order: the reverse of the display hex. */
+export function categoryToVmBytes(categoryHex: string): Uint8Array {
+  const b = hexToBin(categoryHex);
+  if (b.length !== 32) throw new Error('category must be 32 bytes');
+  return b.slice().reverse();
+}
+
+export function lockingBytecodeOf(address: string): Uint8Array {
+  const r = cashAddressToLockingBytecode(address);
+  if (typeof r === 'string') throw new Error(`bad address ${address}: ${r}`);
+  return r.bytecode;
+}
+
+export function p2pkhLock(pkh: Uint8Array): Uint8Array {
+  return Uint8Array.from([0x76, 0xa9, 0x14, ...pkh, 0x88, 0xac]);
+}
+
+export function pkhOfPrivateKey(priv: Uint8Array): Uint8Array {
+  const pub = secp256k1.derivePublicKeyCompressed(priv);
+  if (typeof pub === 'string') throw new Error(pub);
+  return hash160(pub);
+}
+
+export function validateParams(p: LeashParams): void {
+  if (p.allow.length < 1 || p.allow.length > 3) throw new Error('allow-list must have 1..3 entries');
+  if (p.allow.some((a) => a.length === 0)) throw new Error('empty allow-list entry would be anyone-can-spend');
+  if (p.agentPkh.length !== 20) throw new Error('agentPkh must be 20 bytes');
+  if (p.ownerLock.length !== 25) throw new Error('ownerLock must be a 25-byte P2PKH locking bytecode');
+  if (p.limit < DUST) throw new Error('limit below dust');
+  if (p.period < 1n || p.period > 65535n) throw new Error('period must be 1..65535 blocks');
+  if (p.maxFee < 0n) throw new Error('maxFee must be >= 0');
+  const ownerHex = binToHex(p.ownerLock);
+  if (p.allow.some((a) => binToHex(a) === ownerHex)) {
+    // not a security hole (owner can withdraw anyway) but almost always a configuration mistake
+    throw new Error('owner lock should not be in the allow-list');
+  }
+}
+
+export interface PayArgs {
+  stateUtxo: Utxo;
+  agentPrivateKey: Uint8Array;
+  /** Recipient: CashAddr or raw locking bytecode. */
+  payTo: string | Uint8Array;
+  amount: bigint;
+  /** 32-byte request hash (hex or bytes) that goes into the LSH1 receipt. */
+  requestHash: string | Uint8Array;
+  /** Blocks of state-UTXO age to claim; must be <= real confirmations of stateUtxo. 0 for unconfirmed. */
+  elapsedAdd: bigint;
+  /** Miner fee in sats; default: measured size at 1 sat/byte (+5). Must be <= maxFee. */
+  fee?: bigint;
+}
+
+export class AgentLeash {
+  readonly contract: Contract<typeof artifact>;
+
+  constructor(readonly params: LeashParams, readonly provider: NetworkProvider) {
+    validateParams(params);
+    const [a, b = params.allow[0], c = params.allow[0]] = params.allow;
+    this.contract = new Contract(artifact, [
+      categoryToVmBytes(params.stateCategory),
+      params.agentPkh,
+      params.ownerLock,
+      a, b, c,
+      params.limit,
+      params.period,
+      params.maxFee,
+    ], { provider, contractType: 'p2sh32' });
+  }
+
+  get address(): string { return this.contract.address; }
+  get tokenAddress(): string { return this.contract.tokenAddress; }
+
+  /** All UTXOs on the contract, split into the (single) state UTXO and stray bare UTXOs. */
+  async getUtxos(): Promise<{ state?: Utxo; stray: Utxo[]; invalid: Utxo[] }> {
+    const all = await this.contract.getUtxos();
+    const isState = (u: Utxo) => u.token?.category === this.params.stateCategory
+      && u.token.nft?.capability === 'mutable' && u.token.amount === 0n;
+    const states = all.filter(isState);
+    return {
+      state: states[0],
+      // more than one state UTXO can only come from an owner mistake at genesis; surface it
+      invalid: states.slice(1).concat(all.filter((u) => u.token && !isState(u))),
+      stray: all.filter((u) => !u.token),
+    };
+  }
+
+  static stateOf(utxo: Utxo): LeashState {
+    const c = utxo.token?.nft?.commitment;
+    if (c === undefined) throw new Error('UTXO has no NFT');
+    return decodeState(c);
+  }
+
+  /** Build (not send) an agent payment. Throws locally when the contract would reject it. */
+  buildPay(args: PayArgs): TransactionBuilder {
+    if (args.fee === undefined) {
+      // probe pass skips the limit check: the size does not depend on the fee or the state values
+      let probe: string;
+      try { probe = this.buildPayUnchecked(args, 1000n, true).build(); }
+      catch (e: any) { throw new Error(`insufficient leash balance or bad payment: ${e?.message ?? e}`); }
+      const fee = BigInt(probe.length / 2) + 5n;
+      if (fee > this.params.maxFee) throw new Error(`required fee ${fee} > maxFee ${this.params.maxFee}`);
+      return this.buildPay({ ...args, fee });
+    }
+    const fee = args.fee;
+    if (fee > this.params.maxFee) throw new Error(`fee ${fee} > maxFee ${this.params.maxFee}`);
+    const state = AgentLeash.stateOf(args.stateUtxo);
+    nextState(state, args.elapsedAdd, args.amount + fee, this.params.period, this.params.limit); // throws LimitExceededError
+    return this.buildPayUnchecked(args, fee);
+  }
+
+  private buildPayUnchecked(args: PayArgs, fee: bigint, probe = false): TransactionBuilder {
+    const state = AgentLeash.stateOf(args.stateUtxo);
+    let next: LeashState;
+    try { next = nextState(state, args.elapsedAdd, args.amount + fee, this.params.period, this.params.limit); }
+    catch (e) { if (!probe) throw e; next = { elapsed: 0n, spent: 0n }; } // size probe only
+    const change = args.stateUtxo.satoshis - args.amount - fee;
+    if (!probe && change < MIN_STATE_VALUE) throw new Error(`insufficient leash balance: change ${change} < ${MIN_STATE_VALUE}, top up`);
+    const payTo = typeof args.payTo === 'string' ? lockingBytecodeOf(args.payTo) : args.payTo;
+    const agentPub = secp256k1.derivePublicKeyCompressed(args.agentPrivateKey);
+    if (typeof agentPub === 'string') throw new Error(agentPub);
+
+    return new TransactionBuilder({ provider: this.provider })
+      .addInput(args.stateUtxo, this.contract.unlock.pay(agentPub, new SignatureTemplate(args.agentPrivateKey), args.elapsedAdd),
+        { sequence: Number(args.elapsedAdd) })
+      .addOutput({
+        to: this.contract.tokenAddress,
+        amount: change,
+        token: {
+          category: this.params.stateCategory,
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: encodeState(next) },
+        },
+      })
+      .addOutput({ to: payTo, amount: args.amount })
+      .addOutput({ to: receiptLockingBytecode(args.requestHash), amount: 0n });
+  }
+
+  /** Unlocker for any contract UTXO spent on the owner path; ownerInputIndex = index of the owner's P2PKH input. */
+  ownerUnlocker(ownerInputIndex: number): Unlocker {
+    return this.contract.unlock.owner(BigInt(ownerInputIndex));
+  }
+
+  /**
+   * Withdraw everything (state UTXO + strays) to the owner. The NFT is burned (its output is
+   * omitted) unless `keepNft` is set, in which case it is sent to `nftTo` (e.g. the owner's token address).
+   * `ownerUtxo` + `ownerUnlocker` is the owner's own P2PKH input (SignatureTemplate.unlockP2PKH() or a
+   * WizardConnect placeholder).
+   */
+  buildWithdraw(args: {
+    contractUtxos: Utxo[]; ownerUtxo: Utxo; ownerUnlocker: Unlocker; ownerAddress: string; fee?: bigint;
+  }): TransactionBuilder {
+    if (args.fee === undefined) return withAutoFee((f) => this.buildWithdraw({ ...args, fee: f })).builder;
+    const fee = args.fee;
+    const tb = new TransactionBuilder({ provider: this.provider });
+    tb.addInput(args.ownerUtxo, args.ownerUnlocker);
+    for (const u of args.contractUtxos) tb.addInput(u, this.ownerUnlocker(0));
+    const total = args.ownerUtxo.satoshis + args.contractUtxos.reduce((s, u) => s + u.satoshis, 0n);
+    tb.addOutput({ to: args.ownerAddress, amount: total - fee });
+    return tb;
+  }
+
+  /** Top up: owner adds sats to the state UTXO, state unchanged. */
+  buildTopUp(args: {
+    stateUtxo: Utxo; ownerUtxo: Utxo; ownerUnlocker: Unlocker; ownerAddress: string; amount: bigint; fee?: bigint;
+  }): TransactionBuilder {
+    if (args.fee === undefined) return withAutoFee((f) => this.buildTopUp({ ...args, fee: f })).builder;
+    const fee = args.fee;
+    const change = args.ownerUtxo.satoshis - args.amount - fee;
+    const outputs: Output[] = [{
+      to: this.contract.tokenAddress,
+      amount: args.stateUtxo.satoshis + args.amount,
+      token: args.stateUtxo.token,
+    }];
+    if (change >= DUST) outputs.push({ to: args.ownerAddress, amount: change });
+    return new TransactionBuilder({ provider: this.provider })
+      .addInput(args.stateUtxo, this.ownerUnlocker(1))
+      .addInput(args.ownerUtxo, args.ownerUnlocker)
+      .addOutputs(outputs);
+  }
+}
+
+/**
+ * Genesis: the owner spends a UTXO with vout == 0 (its txid becomes the NFT category) and creates
+ * exactly one mutable state NFT with state (0, 0) on the leash address, funded with `fund` sats.
+ * Returns the leash (address now known) and an unsent TransactionBuilder.
+ */
+export function buildGenesis(args: {
+  provider: NetworkProvider;
+  ownerUtxo: Utxo;
+  ownerUnlocker: Unlocker;
+  ownerAddress: string;
+  params: Omit<LeashParams, 'stateCategory'>;
+  fund: bigint;
+  fee?: bigint;
+}): { leash: AgentLeash; builder: TransactionBuilder } {
+  if (args.fee === undefined) {
+    const { builder } = withAutoFee((f) => buildGenesis({ ...args, fee: f }).builder);
+    return { leash: buildGenesis({ ...args, fee: 0n }).leash, builder };
+  }
+  if (args.ownerUtxo.vout !== 0) throw new Error('genesis needs an owner UTXO with vout 0 (do a self-send first)');
+  if (args.ownerUtxo.token) throw new Error('genesis input must not carry tokens');
+  const fee = args.fee;
+  const leash = new AgentLeash({ ...args.params, stateCategory: args.ownerUtxo.txid }, args.provider);
+  const change = args.ownerUtxo.satoshis - args.fund - fee;
+  if (args.fund < MIN_STATE_VALUE) throw new Error('fund below minimum state value');
+  if (change < 0n) throw new Error('owner UTXO too small');
+  const builder = new TransactionBuilder({ provider: args.provider })
+    .addInput(args.ownerUtxo, args.ownerUnlocker)
+    .addOutput({
+      to: leash.tokenAddress,
+      amount: args.fund,
+      token: { category: args.ownerUtxo.txid, amount: 0n, nft: { capability: 'mutable', commitment: encodeState({ elapsed: 0n, spent: 0n }) } },
+    });
+  if (change >= DUST) builder.addOutput({ to: args.ownerAddress, amount: change });
+  return { leash, builder };
+}
