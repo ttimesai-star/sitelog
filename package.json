@@ -1,0 +1,34 @@
+{
+  "name": "agentlog-mcp",
+  "version": "0.1.0",
+  "description": "MCP server (Streamable HTTP) that keeps a tamper-evident, signed log of what an AI agent did and answers \"what did my agent do yesterday, and was the log changed?\", with a voice web simulator of Alexa+",
+  "type": "module",
+  "license": "MIT",
+  "author": "Artur Baranovsky",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "node --conditions=agentlog-source --disable-warning=ExperimentalWarning src/main.ts",
+    "demo": "node --conditions=agentlog-source --disable-warning=ExperimentalWarning src/main.ts --demo",
+    "seed": "node --conditions=agentlog-source --disable-warning=ExperimentalWarning scripts/seed-demo.ts",
+    "tamper": "node --conditions=agentlog-source --disable-warning=ExperimentalWarning scripts/tamper.ts",
+    "test": "node --conditions=agentlog-source --disable-warning=ExperimentalWarning --test \"test/*.test.ts\" \"packages/agentlog/test/*.test.ts\"",
+    "typecheck": "tsc -p . && tsc -p packages/agentlog"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "^0.8.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "agentlog": "file:packages/agentlog",
+    "viem": "^2.57.4",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

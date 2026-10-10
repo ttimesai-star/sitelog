@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Log for Alexa+</title>
+<meta name="description" content="Simulated Alexa+ experience: a voice web client of the agentlog MCP server, with every MCP message shown.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>Agent Action Log <span class="for">for Alexa+</span></h1>
+    <p class="lede">Ask out loud what your AI agent did and whether its log was changed. This page is a real MCP client: it talks to the agentlog MCP server over Streamable HTTP, and every message is on the right.</p>
+  </div>
+  <div class="conn" id="conn"><span class="dot"></span><span id="connText">connecting…</span></div>
+</header>
+
+<main>
+  <section class="device" aria-label="Simulated Alexa+ device">
+    <div class="screen">
+      <div class="ask">
+        <button id="mic" class="mic" type="button" aria-label="Talk">
+          <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path fill="currentColor" d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V22h2v-3.08A7 7 0 0 0 19 12h-2Z"/></svg>
+        </button>
+        <form id="askForm" class="askForm">
+          <input id="utter" type="text" autocomplete="off" placeholder="Alexa, what did my agent do yesterday, and has its log been tampered with?">
+          <button type="submit">Ask</button>
+        </form>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="heard" id="heard" hidden></div>
+      <div class="reply" id="reply" aria-live="polite"></div>
+      <div class="plan" id="plan" hidden></div>
+      <div class="cardWrap" id="cardWrap" hidden>
+        <div class="cardLabel">MCP App: <code>ui://agentlog/audit-card.html</code>, rendered in a sandboxed frame</div>
+        <iframe id="card" title="Audit card" sandbox="allow-scripts"></iframe>
+      </div>
+      <label class="speak"><input type="checkbox" id="speakOn" checked> Read the answer aloud</label>
+    </div>
+
+    <div class="demo" id="demo" hidden>
+      <h2>Demo controls</h2>
+      <p>Play the attacker: someone with write access to the server's SQLite file rewrites yesterday's afternoon run so the failed health check reads <code>200</code>. Then ask again.</p>
+      <div class="row">
+        <select id="tamperMode" aria-label="How to tamper">
+          <option value="edit">Edit step 2 (keep the old signature)</option>
+          <option value="forge">Edit step 2 and re-sign with an intruder's key</option>
+          <option value="delete">Delete step 2</option>
+        </select>
+        <button id="tamper" type="button" class="danger">Tamper with the log</button>
+        <button id="reset" type="button">Reset demo</button>
+      </div>
+      <div id="demoOut" class="demoOut"></div>
+    </div>
+  </section>
+
+  <section class="wire" aria-label="MCP messages">
+    <div class="wireHead">
+      <h2>MCP wire <span class="muted">Streamable HTTP · <code>/mcp</code></span></h2>
+      <button id="clearWire" type="button">Clear</button>
+    </div>
+    <div class="tools" id="tools"></div>
+    <ol id="wire" class="wireList"></ol>
+  </section>
+</main>
+
+<footer>
+  <span>Simulated Alexa+ experience (Alexa+ device tooling is preview-only). The intent router on this page stands in for Alexa+'s model: it picks the tool and arguments, shown under "Tool plan". The server is <a href="https://github.com/ttimesai-star/agentlog-mcp">agentlog-mcp</a> (MIT).</span>
+</footer>
+<script src="app.js" type="module"></script>
+</body>
+</html>

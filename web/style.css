@@ -1,0 +1,75 @@
+:root {
+  --bg: #f4f6fa; --panel: #ffffff; --fg: #141821; --muted: #5d6576; --line: #dfe3eb;
+  --accent: #1a73e8; --accent-fg: #ffffff; --ring: #00a3e0; --bad: #c22a2a; --ok: #11804a;
+  --code: #f0f2f6; --out: #e8f0fe; --in: #eaf6ee; --note: #fff4dc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1116; --panel: #161a22; --fg: #eceff4; --muted: #9aa3b4; --line: #283041;
+    --accent: #6aa8ff; --accent-fg: #0e1116; --ring: #3fc6ff; --bad: #ff6b6b; --ok: #4cd38a;
+    --code: #1d2230; --out: #172338; --in: #14291d; --note: #33290f;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1116; --panel: #161a22; --fg: #eceff4; --muted: #9aa3b4; --line: #283041;
+  --accent: #6aa8ff; --accent-fg: #0e1116; --ring: #3fc6ff; --bad: #ff6b6b; --ok: #4cd38a;
+  --code: #1d2230; --out: #172338; --in: #14291d; --note: #33290f;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+a { color: var(--accent); }
+code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em; background: var(--code); padding: 0 4px; border-radius: 4px; }
+header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; padding: 18px 24px 8px; flex-wrap: wrap; }
+h1 { font-size: 22px; margin: 0; }
+h1 .for { color: var(--ring); font-weight: 600; }
+h2 { font-size: 15px; margin: 0; }
+.lede { margin: 4px 0 0; color: var(--muted); max-width: 760px; }
+.muted { color: var(--muted); font-weight: 400; }
+.conn { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+.conn .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.conn.ok .dot { background: var(--ok); }
+.conn.err .dot { background: var(--bad); }
+main { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 16px; padding: 8px 24px 16px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 8px 16px; } header { padding: 16px 16px 8px; } }
+.device, .wire { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; min-width: 0; }
+.screen { border-radius: 14px; padding: 14px; background: linear-gradient(180deg, rgba(0,163,224,.07), transparent 120px); }
+.ask { display: flex; gap: 12px; align-items: center; }
+.mic { flex: none; width: 60px; height: 60px; border-radius: 50%; border: 0; background: var(--ring); color: #fff; cursor: pointer; box-shadow: 0 0 0 0 rgba(0,163,224,.6); }
+.mic.listening { animation: pulse 1.2s infinite; }
+.mic:disabled { opacity: .45; cursor: not-allowed; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(0,163,224,.6); } 70% { box-shadow: 0 0 0 16px rgba(0,163,224,0); } 100% { box-shadow: 0 0 0 0 rgba(0,163,224,0); } }
+.askForm { flex: 1; display: flex; gap: 8px; min-width: 0; }
+.askForm input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: inherit; }
+button { font: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+button[type="submit"] { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+button.danger { background: var(--bad); color: #fff; border-color: transparent; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+.chips button { font-size: 13px; padding: 5px 10px; border-radius: 999px; }
+.heard { margin-top: 12px; color: var(--muted); font-style: italic; }
+.reply { margin-top: 10px; font-size: 18px; line-height: 1.45; min-height: 1.4em; }
+.reply.err { color: var(--bad); font-size: 15px; }
+.plan { margin-top: 10px; font-size: 13px; color: var(--muted); background: var(--code); border-radius: 8px; padding: 6px 10px; overflow-wrap: anywhere; }
+.cardWrap { margin-top: 12px; }
+.cardLabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+#card { width: 100%; height: 360px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.speak { display: block; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.demo { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.demo p { margin: 6px 0 10px; color: var(--muted); font-size: 14px; }
+.demo .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.demo select { font: inherit; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); max-width: 100%; }
+.demoOut { margin-top: 8px; font-size: 13px; color: var(--bad); }
+.wireHead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.tools span { font-size: 12px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; padding: 2px 8px; border-radius: 999px; background: var(--code); }
+.tools span.app { outline: 1px solid var(--ring); }
+.wireList { list-style: none; margin: 0; padding: 0; max-height: 72vh; overflow: auto; }
+.wireList li { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; overflow: hidden; }
+.wireList li.out summary { background: var(--out); }
+.wireList li.in summary { background: var(--in); }
+.wireList li.note summary { background: var(--note); }
+.wireList summary { cursor: pointer; padding: 6px 10px; font-size: 13px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.wireList summary b { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.wireList summary .meta { color: var(--muted); font-size: 12px; }
+.wireList pre { margin: 0; padding: 8px 10px; font-size: 12px; overflow: auto; max-height: 320px; background: var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
+footer { padding: 4px 24px 24px; color: var(--muted); font-size: 13px; }
+@media (max-width: 900px) { footer { padding: 4px 16px 20px; } }

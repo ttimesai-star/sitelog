@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MCP App sandbox</title></head>
+<body>
+<script>
+// Sandbox proxy for MCP App views. Framed with sandbox="allow-scripts" (opaque origin) and served with a
+// CSP that allows the view's inline code but no network. The host sends the view's HTML once; the view
+// then replaces this document and talks to the host (window.parent) over postMessage.
+window.addEventListener("message", function onHtml(ev) {
+  if (ev.source !== window.parent || !ev.data || ev.data.type !== "agentlog-sandbox-html") return;
+  window.removeEventListener("message", onHtml);
+  document.open();
+  document.write(String(ev.data.html));
+  document.close();
+});
+window.parent.postMessage({ type: "agentlog-sandbox-ready" }, "*");
+</script>
+</body></html>

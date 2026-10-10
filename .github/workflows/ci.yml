@@ -1,0 +1,28 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["22.18", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Smoke test the server over HTTP
+        run: |
+          AGENTLOG_ARKIV=off PORT=8787 npm run demo &
+          for i in $(seq 1 30); do curl -sf localhost:8787/healthz && break; sleep 1; done
+          curl -sf -X POST localhost:8787/mcp -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' | tee /tmp/init.txt
+          grep -q '"protocolVersion":"2025-11-25"' /tmp/init.txt

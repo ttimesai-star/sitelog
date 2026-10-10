@@ -1,0 +1,54 @@
+{
+ "format": "agentlog-party/v1",
+ "party": "client",
+ "agent_id": "release-checker",
+ "run_id": "run-20261009T152956",
+ "description": "Demo: the client's copies of three steps, with its claims.",
+ "entries": [
+  {
+   "step": 2,
+   "raw": {
+    "input": [
+     "https://api.github.com/repos/ttimesai-star/sitelog/commits/main"
+    ],
+    "output": {
+     "body_sha256": "0x6ffedebb61a210cdcbf616f7d6111e5019e7cfa2bc1f5f6ead51860c99e72cfe",
+     "content_type": "application/json; charset=utf-8",
+     "excerpt": "{\"sha\":\"6a8443819e57a40e7df9ae65beff063310751ada\",\"node_id\":\"C_kwDOVCTlZ9oAKDZhODQ0MzgxOWU1N2E0MGU3ZGY5YWU2NWJlZmYwNjMzMTA3NTFhZGE\",\"commit\":{\"author\":{\"name\":\"Artur Baranovsky\",\"email\":\"278594396+ttimesai-star@users.noreply.github.com\",\"date\":\"2026-10-09T12:35:38Z\"},\"committer\":{\"name\":\"Artur Baranovsky\",\"email\":\"278594396+ttimesai-star@users.noreply.github.com\",\"date\":\"2026-10-09T12:35:38Z\"},\"message\":\"friction: T8 browser wallet write path tested headless\\n\\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\",\"tree\":{\"sha\":\"48820c06e307c03d2aab16f86a2ab924986d4e95\",\"url\":\"https://api.g",
+     "status": 200,
+     "url": "https://api.github.com/repos/ttimesai-star/sitelog/commits/main"
+    }
+   },
+   "claim": "We agree the agent checked commit 6a84438."
+  },
+  {
+   "step": 4,
+   "raw": {
+    "input": [
+     "https://ttimesai-star.github.io/sitelog/"
+    ],
+    "output": {
+     "body_sha256": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "content_type": "text/html; charset=utf-8",
+     "excerpt": "<html><body>503 Service Unavailable</body></html>",
+     "status": 503,
+     "url": "https://ttimesai-star.github.io/sitelog/"
+    }
+   },
+   "claim": "The live page was down (HTTP 503); the agent never got a 200."
+  },
+  {
+   "step": 8,
+   "raw": {
+    "input": {
+     "steps": 8,
+     "head": "0x8fcd140fb0c36ae50fc09e042fc4709add246f45f53ea62dfed713cfa707b4d2"
+    },
+    "output": {
+     "report": "commit: 6a84438 friction: T8 browser wallet write path tested headless  \nlive page: 200  \nArkiv: 355048"
+    }
+   },
+   "claim": "The report we received did not approve the release."
+  }
+ ]
+}

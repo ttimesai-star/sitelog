@@ -1,0 +1,61 @@
+{
+  "name": "agentlog",
+  "version": "0.2.0",
+  "description": "Tamper-evident audit trail for AI agents: hash-chained, signed steps, offline verification, dispute replay, stores for Arkiv, SQLite and memory",
+  "type": "module",
+  "license": "MIT",
+  "author": "Artur Baranovsky",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ttimesai-star/agentlog.git"
+  },
+  "keywords": [
+    "ai-agents",
+    "audit-log",
+    "tamper-evident",
+    "hash-chain",
+    "mcp",
+    "arkiv",
+    "eu-ai-act"
+  ],
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "agentlog-source": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./src/core.ts",
+      "agentlog-source": "./src/core.ts",
+      "default": "./dist/core.js"
+    },
+    "./sqlite": {
+      "types": "./src/sqlite.ts",
+      "agentlog-source": "./src/sqlite.ts",
+      "default": "./dist/sqlite.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --test \"test/*.test.ts\"",
+    "typecheck": "tsc -p .",
+    "prepare": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@arkiv-network/sdk": "^0.8.1",
+    "viem": "^2.57.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

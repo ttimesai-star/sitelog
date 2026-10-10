@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.agentlog-mcp/
+*.db
+*.db-shm
+*.db-wal
+.env
+*.key
+agent-keys.json

@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent log audit</title>
+<style>
+  :root { --bg:#ffffff; --fg:#14171f; --muted:#5c6475; --line:#e3e6ee; --ok:#11804a; --okbg:#e8f6ee; --bad:#c22a2a; --badbg:#fdeceb; --warn:#9a6200; --warnbg:#fff4dc; --chip:#f2f4f8; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#14171f; --fg:#eef0f5; --muted:#9aa3b5; --line:#2a3040; --ok:#4cd38a; --okbg:#123423; --bad:#ff6b6b; --badbg:#3a1717; --warn:#f2b84b; --warnbg:#3a2c0e; --chip:#1e2330; } }
+  :root[data-theme="dark"] { --bg:#14171f; --fg:#eef0f5; --muted:#9aa3b5; --line:#2a3040; --ok:#4cd38a; --okbg:#123423; --bad:#ff6b6b; --badbg:#3a1717; --warn:#f2b84b; --warnbg:#3a2c0e; --chip:#1e2330; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { padding:14px 16px; }
+  h1 { font-size:16px; margin:0 0 2px; }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:10px; }
+  .say { font-size:14px; margin:0 0 12px; }
+  .run { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px; }
+  .head { display:flex; justify-content:space-between; gap:8px; align-items:baseline; flex-wrap:wrap; }
+  .task { font-weight:600; }
+  .meta { color:var(--muted); font-size:12px; }
+  .badge { font-size:11px; font-weight:700; letter-spacing:.04em; padding:2px 8px; border-radius:999px; text-transform:uppercase; }
+  .intact { color:var(--ok); background:var(--okbg); }
+  .open { color:var(--warn); background:var(--warnbg); }
+  .broken { color:var(--bad); background:var(--badbg); }
+  .chain { display:flex; flex-wrap:wrap; align-items:center; gap:4px; margin:10px 0 6px; }
+  .step { min-width:30px; height:30px; padding:0 6px; border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; border:1px solid var(--line); background:var(--chip); cursor:default; }
+  .step.ok { border-color:var(--ok); color:var(--ok); }
+  .step.break { border:2px solid var(--bad); color:var(--bad); background:var(--badbg); }
+  .step.after_break { opacity:.45; border-style:dashed; }
+  .step.missing { border-style:dashed; }
+  .link { width:10px; height:2px; background:var(--ok); }
+  .link.cut { background:transparent; border-top:2px dashed var(--bad); }
+  .why { background:var(--badbg); color:var(--bad); border-radius:8px; padding:7px 10px; font-size:13px; margin-top:6px; }
+  .note { color:var(--muted); font-size:12px; }
+  details { margin-top:6px; }
+  summary { cursor:pointer; color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:6px; }
+  td { padding:3px 4px; border-top:1px solid var(--line); vertical-align:top; }
+  td.h { font-family:ui-monospace, SFMono-Regular, Consolas, monospace; color:var(--muted); }
+  tr.break td { color:var(--bad); font-weight:600; }
+  tr.after_break td { opacity:.55; }
+  .empty { color:var(--muted); }
+  .foot { color:var(--muted); font-size:11px; margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap" id="root"><p class="empty">Waiting for the tool result…</p></div>
+<script>
+// MCP App view (ext-apps protocol, 2026-01-26). No libraries, no network: the host hands us the tool
+// result over postMessage and we draw it.
+(function () {
+  "use strict";
+  var root = document.getElementById("root");
+  var nextId = 1;
+  var pending = {};
+  function post(msg) { window.parent.postMessage(msg, "*"); }
+  function request(method, params) {
+    var id = nextId++;
+    post({ jsonrpc: "2.0", id: id, method: method, params: params });
+    return new Promise(function (resolve, reject) { pending[id] = { resolve: resolve, reject: reject }; });
+  }
+  function notify(method, params) { post({ jsonrpc: "2.0", method: method, params: params || {} }); }
+
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function short(h) { h = String(h || ""); return h ? h.slice(0, 10) + "…" : ""; }
+  function time(iso) { if (!iso) return ""; try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch (e) { return iso; } }
+  function label(a) { return { "run.start": "start", "run.end": "seal", "llm.call": "LLM", "tool.call": "tool", "tool.error": "error", "(missing)": "?" }[a] || a; }
+
+  function runHtml(r) {
+    var steps = r.timeline || [];
+    var chain = steps.map(function (s, i) {
+      var cls = s.action === "(missing)" ? "break missing" : s.status;
+      var link = i === 0 ? "" : '<span class="link' + (s.status === "break" || s.status === "after_break" ? " cut" : "") + '"></span>';
+      var title = "step " + s.step + " · " + s.action + (s.tool ? " " + s.tool : "") + (s.note ? " · " + s.note : "") + (s.problems && s.problems.length ? "\n" + s.problems.join("\n") : "");
+      return link + '<span class="step ' + esc(cls) + '" title="' + esc(title) + '">' + esc(s.step) + "</span>";
+    }).join("");
+    var fb = r.explain && r.explain.first_break;
+    var rows = steps.map(function (s) {
+      return '<tr class="' + esc(s.status) + '"><td>' + esc(s.step) + "</td><td>" + esc(label(s.action)) + (s.tool ? " " + esc(s.tool) : "") + "</td><td>" + esc(s.note) + '</td><td class="h">' + esc(short(s.entry_hash)) + "</td></tr>";
+    }).join("");
+    return '<div class="run">' +
+      '<div class="head"><span class="task">' + esc(r.task || r.run_id) + '</span><span class="badge ' + esc(r.verdict) + '">' + esc(r.verdict) + "</span></div>" +
+      '<div class="meta">' + esc(r.agent_id) + " · " + esc(r.run_id) + " · " + esc(time(r.started_at)) + " · " + esc(r.steps) + " steps · " + (r.sealed ? "sealed" : "not sealed") + " · " + esc(r.source) + "</div>" +
+      '<div class="chain" aria-label="chain of steps">' + chain + "</div>" +
+      (fb ? '<div class="why">Breaks at step ' + esc(fb.step) + ": " + esc(fb.reason) + "." + (r.explain.trusted_prefix > 0 ? " Steps 0–" + esc(r.explain.trusted_prefix - 1) + " are genuine." : "") + "</div>" : "") +
+      (r.verdict === "open" ? '<div class="note">Never sealed: the run may have stopped early (last step: ' + esc(steps.length ? steps[steps.length - 1].action : "-") + ").</div>" : "") +
+      (r.forged_records ? '<div class="note">' + esc(r.forged_records) + " forged record(s) from other wallets ignored.</div>" : "") +
+      "<details><summary>Steps and hashes</summary><table>" + rows + "</table></details>" +
+      "</div>";
+  }
+
+  function render(sc) {
+    if (!sc) { root.innerHTML = '<p class="empty">No structured result.</p>'; return; }
+    var html = "";
+    if (sc.kind === "day") {
+      var t = sc.totals || {};
+      html += "<h1>" + esc(sc.label) + " · " + esc(sc.agent_id || "all agents") + "</h1>";
+      html += '<div class="sub">' + esc(sc.date) + " (" + esc(sc.tz) + ") · " + esc(t.runs) + " runs · " + esc(t.intact) + " intact · " + esc(t.open) + " open · " + esc(t.broken) + " broken</div>";
+      html += '<p class="say">' + esc(sc.speech) + "</p>";
+      html += (sc.runs || []).map(runHtml).join("") || '<p class="empty">No runs that day.</p>';
+    } else if (sc.kind === "run") {
+      html += "<h1>Run check</h1>";
+      html += '<p class="say">' + esc(sc.explain && sc.explain.sentence) + "</p>";
+      html += runHtml(sc);
+    } else {
+      html = "<pre>" + esc(JSON.stringify(sc, null, 2)) + "</pre>";
+    }
+    html += '<div class="foot">Verified by recomputing every SHA-256 hash and EIP-191 signature and following the links from step 0. Nothing here is taken from a stored flag.</div>';
+    root.innerHTML = html;
+    sizeChanged();
+  }
+
+  function sizeChanged() {
+    notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight });
+  }
+
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== window.parent) return;
+    var m = ev.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id != null && pending[m.id] && !m.method) {
+      var p = pending[m.id]; delete pending[m.id];
+      if (m.error) p.reject(m.error); else p.resolve(m.result);
+      return;
+    }
+    if (m.method === "ui/notifications/tool-result") render(m.params && m.params.structuredContent);
+    if (m.method === "ui/notifications/host-context-changed" && m.params && m.params.theme) document.documentElement.setAttribute("data-theme", m.params.theme);
+    if (m.method === "ui/resource-teardown" && m.id != null) post({ jsonrpc: "2.0", id: m.id, result: {} });
+  });
+
+  request("ui/initialize", { appInfo: { name: "agentlog-audit-card", version: "0.1.0" }, appCapabilities: {}, protocolVersion: "2026-01-26" })
+    .then(function (res) {
+      var ctx = res && res.hostContext;
+      if (ctx && ctx.theme) document.documentElement.setAttribute("data-theme", ctx.theme);
+      notify("ui/notifications/initialized", {});
+    })
+    .catch(function () { root.innerHTML = '<p class="empty">The host did not answer ui/initialize.</p>'; });
+})();
+</script>
+</body>
+</html>
