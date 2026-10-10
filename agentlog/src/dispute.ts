@@ -139,7 +139,14 @@ function normalize(input: PartyInput | undefined, party: Party, warnings: string
 }
 
 const provided = (c: RawCheck) => [c.input, c.output, c.tool].filter((x) => x !== null)
-const matchesAll = (c: RawCheck) => provided(c).length > 0 && provided(c).every(Boolean)
+// A tool name alone never confirms a version: in the plain mode it is public, so anyone can "match" it.
+const matchesAll = (c: RawCheck) => (c.input !== null || c.output !== null) && provided(c).every(Boolean)
+
+/** Parts (input, output) the other party gave and this one did not: its confirmation does not cover them. */
+function uncovered(winner: RawCheck | undefined, other: RawCheck | undefined): string[] {
+  if (!winner || !other) return []
+  return (["input", "output"] as const).filter((k) => winner[k] === null && other[k] !== null)
+}
 
 function describe(c: RawCheck | undefined): string {
   if (!c) return "nothing"
@@ -237,6 +244,12 @@ export async function replayDispute(bundle: ExportBundle, opts: DisputeOptions =
       verdict = "neither"
       const said = [op.provided && `operator: ${describe(op.check)}`, cl.provided && `client: ${describe(cl.check)}`].filter(Boolean).join("; ")
       finding = said ? `No version provided matches what the agent signed (${said}). The chain shows only that this step happened, with these hashes.` : "Nobody provided raw data for this step. The chain shows only that it happened, with these hashes."
+    }
+
+    if (verdict === "operator" || verdict === "client") {
+      const [w, o] = verdict === "operator" ? [op, cl] : [cl, op]
+      const gap = uncovered(w.check, o.check)
+      if (gap.length) finding += ` The ${verdict} gave no ${gap.join(" or ")} for this step: that part is confirmed for neither side.`
     }
 
     let toolRevealed: string | undefined

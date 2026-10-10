@@ -64,6 +64,20 @@ describe("dispute replay", () => {
     assert.equal(r.steps[3].client.claim, "we agree the run was sealed")
   })
 
+  it("a tool name alone confirms nothing, and a partial version says what it does not cover", async () => {
+    const { bundle, evidence } = await run()
+    const operator = partyFrom(evidence.entries, [2])
+    operator.entries[0].raw!.output = { ok: true, to: "ACME", amount: 1200, ref: "tx-1" } // edited
+    // The client only knows the tool name: in the plain mode that is public, so it proves nothing.
+    let r = await replayDispute(bundle, { operator: { file: operator }, client: { file: { entries: [{ step: 2, raw: { tool: "send_payment" } }] } } })
+    assert.equal(r.steps.find((s) => s.step === 2)!.verdict, "neither")
+    // The client holds only the input: it wins the step, but the output stays unconfirmed.
+    r = await replayDispute(bundle, { operator: { file: operator }, client: { file: { entries: [{ step: 2, raw: { input: evidence.entries[2].raw!.input } }] } } })
+    const s2 = r.steps.find((s) => s.step === 2)!
+    assert.equal(s2.verdict, "client")
+    assert.match(s2.finding, /client gave no output for this step/)
+  })
+
   it("a step only the operator holds, matching, is not disputed", async () => {
     const { bundle, evidence } = await run()
     const r = await replayDispute(bundle, { operator: { file: partyFrom(evidence.entries) } })
