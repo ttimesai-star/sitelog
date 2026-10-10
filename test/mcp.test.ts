@@ -128,12 +128,25 @@ describe("MCP server over Streamable HTTP", () => {
     await seedDemo(srv.local, srv.ctx.keys, TZ, NOW, true)
     const client_file = await demoClientFile(srv.local)
     // The operator rewrites its own evidence (not the chain): the health check now reads 200.
-    srv.local.db.prepare("UPDATE entries SET raw = ? WHERE run_id = ? AND step = 2").run(JSON.stringify({ input: { url: "https://staging.acme.example/health" }, output: { status: 200, body: "ok" } }), client_file.run_id!)
+    const t = await tamperDemo(srv.local, { mode: "evidence" })
+    assert.equal(t.actor, "operator")
+    assert.equal(t.run_id, client_file.run_id)
+    const raw = JSON.parse((srv.local.db.prepare("SELECT raw FROM entries WHERE run_id = ? AND step = 2").get(t.run_id) as { raw: string }).raw)
+    assert.deepEqual(raw.output, { status: 200, body: "ok" })
+    assert.deepEqual(raw.input, { url: "https://staging.acme.example/health" })
+    // The signed chain is untouched, so the run itself still verifies: only the dispute can tell the copies apart.
+    const v = await call(client, "verify_run", { agent_id: DEMO_AGENT, run_id: t.run_id })
+    assert.equal(v.structuredContent.verdict, "intact")
     const r = await call(client, "diff_versions", { agent_id: DEMO_AGENT, run_id: client_file.run_id, client: client_file })
     const verdicts = Object.fromEntries(r.structuredContent.steps.filter((s: any) => s.disputed).map((s: any) => [s.step, s.verdict]))
     assert.equal(verdicts[2], "client")
     assert.equal(verdicts[5], "both")
     assert.match(r.content[0].text, /Step 2 .*the client's version is what the agent signed/)
+  })
+
+  it("refuses an unknown tamper mode instead of falling back to an edit", async () => {
+    await seedDemo(srv.local, srv.ctx.keys, TZ, NOW, true)
+    await assert.rejects(tamperDemo(srv.local, { mode: "rewrite" as never }), (e: Error & { status?: number }) => e.status === 400 && /unknown tamper mode/.test(e.message))
   })
 
   it("get_run returns an export that verifies offline; the run resource returns the same", async () => {

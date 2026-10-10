@@ -34,10 +34,10 @@ Now press **Tamper with the log**. This plays an attacker with write access to t
 The card shows the chain of that run with step 2 in red. Try the other modes (re-sign the step with an intruder's key, delete it) and **Reset demo**. Other questions the page understands:
 
 - "Check the afternoon run." → `verify_run`
-- "Who is right about the afternoon release, the client or the operator?" → `diff_versions` with the client's own copy of the steps
+- "Who is right about the afternoon release, the client or the operator?" → `diff_versions` with the client's own copy of the steps. To stage the dispute, **Reset demo**, pick **Operator edits its own evidence for step 2 (chain untouched)** and press **Tamper with the log**: the operator's private copy of the health check now reads `200`, the signed chain is not touched (so the run still verifies as intact), and the answer is that the client's version is what the agent signed
 - "Verify the release checker's run on Arkiv." → `verify_run` with `source: "arkiv"`: a real run written on 9 October 2026 to the public Arkiv testnet, read from its RPC and verified in place (needs internet)
 
-Without the demo data: `npm start`. Tests: `npm test`. Same from the command line: `npm run seed`, `npm run tamper -- --mode forge`.
+Without the demo data: `npm start`. Tests: `npm test`. Same from the command line: `npm run seed`, `npm run tamper -- --mode forge` (modes: `edit`, `forge`, `delete`, `evidence`).
 
 ## Why
 
@@ -147,7 +147,7 @@ The [Agent Skill](skills/agentlog-audit/SKILL.md) tells a model when and how to 
 
 ## Tests
 
-`npm test` runs 65 tests: the library (hashing, signatures, gaps, forks, foreign signers, seals, export, dispute replay, salted commitments, SQLite persistence and tampering) and the server end to end, where the SDK's own MCP client talks Streamable HTTP to it: protocol negotiation, the six tools and the MCP App resource, a run logged step by step, the voice question before and after an attacker edits the SQLite file, a re-signed and a deleted step, a dispute, an offline-verifiable export, state across a server restart, refused requests (no session, foreign `Origin` or `Host`, bad ids) and static paths that try to leave `web/`. CI runs them on Node 22.18 and 24 and smoke-tests the HTTP endpoint.
+`npm test` runs 66 tests: the library (hashing, signatures, gaps, forks, foreign signers, seals, export, dispute replay, salted commitments, SQLite persistence and tampering) and the server end to end, where the SDK's own MCP client talks Streamable HTTP to it: protocol negotiation, the six tools and the MCP App resource, a run logged step by step, the voice question before and after an attacker edits the SQLite file, a re-signed and a deleted step, a dispute staged by the operator editing its own evidence, an unknown tamper mode refused, an offline-verifiable export, state across a server restart, refused requests (no session, foreign `Origin` or `Host`, bad ids) and static paths that try to leave `web/`. CI runs them on Node 22.18 and 24 and smoke-tests the HTTP endpoint.
 
 ## Built during the hackathon
 

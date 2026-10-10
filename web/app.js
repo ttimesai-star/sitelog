@@ -289,7 +289,11 @@ for (const c of CHIPS) {
 $("tamper").addEventListener("click", async () => {
   const r = await fetch("/demo/tamper", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: $("tamperMode").value }) })
   const j = await r.json()
-  $("demoOut").textContent = j.error ? j.error : `Attacker ${j.what} in ${j.run_id}. The server was not told. Ask again.`
+  $("demoOut").textContent = j.error
+    ? j.error
+    : j.actor === "operator"
+      ? `The operator ${j.what} in ${j.run_id}. Now ask who is right, the client or the operator.`
+      : `Attacker ${j.what} in ${j.run_id}. The server was not told. Ask again.`
   wire("note", "demo: tamper", "outside MCP: direct write to the SQLite file", j)
 })
 $("reset").addEventListener("click", async () => {

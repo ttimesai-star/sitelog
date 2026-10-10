@@ -89,12 +89,15 @@ export async function seedDemo(store: SqliteStore, keys: KeyRing, tz: string, no
   return ids
 }
 
-export type TamperMode = "edit" | "delete" | "forge"
+export type TamperMode = "edit" | "delete" | "forge" | "evidence"
+export const TAMPER_MODES: readonly TamperMode[] = ["edit", "delete", "forge", "evidence"]
 
 /**
  * The attacker: someone with write access to the SQLite file (an operator covering up, or an intruder)
  * rewrites the afternoon run so the failed health check reads 200. Without the agent's key the
  * signature cannot follow; the verifier finds the exact step.
+ * Mode "evidence" is the operator instead: it rewrites only its own private copy of the step's raw input and
+ * output, and leaves the signed chain alone. The run still verifies; diff_versions shows whose copy is genuine.
  */
 export async function tamperDemo(store: SqliteStore, q: { run_id?: string; step?: number; mode?: TamperMode } = {}) {
   const runs = await store.listRuns({ agentId: DEMO_AGENT })
@@ -102,11 +105,16 @@ export async function tamperDemo(store: SqliteStore, q: { run_id?: string; step?
   if (!runId) throw new Error("no demo run to tamper with: seed first")
   const step = q.step ?? 2
   const mode: TamperMode = q.mode ?? "edit"
+  if (!TAMPER_MODES.includes(mode)) throw Object.assign(new Error(`unknown tamper mode: ${String(mode)} (use ${TAMPER_MODES.join(", ")})`), { status: 400 })
   const row = store.db.prepare("SELECT body, raw FROM entries WHERE agent_id = ? AND run_id = ? AND step = ?").get(DEMO_AGENT, runId, step) as { body: string; raw: string | null } | undefined
   if (!row) throw new Error(`run ${runId} has no step ${step}`)
   const e = JSON.parse(row.body) as Entry
   const fakeOutput = { status: 200, body: "ok" }
-  if (mode === "delete") {
+  if (mode === "evidence") {
+    const raw = row.raw ? JSON.parse(row.raw) : {}
+    store.db.prepare("UPDATE entries SET raw = ? WHERE agent_id = ? AND run_id = ? AND step = ?").run(JSON.stringify({ ...raw, output: fakeOutput }), DEMO_AGENT, runId, step)
+    return { tampered: true, mode, actor: "operator", agent_id: DEMO_AGENT, run_id: runId, step, what: `rewrote its own evidence for step ${step}: staging health 503 -> 200 (the signed chain is untouched)` }
+  } else if (mode === "delete") {
     store.db.prepare("DELETE FROM entries WHERE agent_id = ? AND run_id = ? AND step = ?").run(DEMO_AGENT, runId, step)
   } else if (mode === "forge") {
     const intruder = privateKeyToAccount(generatePrivateKey())
@@ -116,7 +124,7 @@ export async function tamperDemo(store: SqliteStore, q: { run_id?: string; step?
     const edited = { ...e, output_hash: await hashValue(fakeOutput), note: "GET staging health -> 200" }
     store.db.prepare("UPDATE entries SET body = ?, raw = ? WHERE agent_id = ? AND run_id = ? AND step = ?").run(JSON.stringify(edited), JSON.stringify({ ...(row.raw ? JSON.parse(row.raw) : {}), output: fakeOutput }), DEMO_AGENT, runId, step)
   }
-  return { tampered: true, mode, agent_id: DEMO_AGENT, run_id: runId, step, what: mode === "delete" ? `deleted step ${step}` : `rewrote step ${step}: staging health 503 -> 200${mode === "forge" ? ", re-signed with an intruder's key" : ""}` }
+  return { tampered: true, mode, actor: "attacker", agent_id: DEMO_AGENT, run_id: runId, step, what: mode === "delete" ? `deleted step ${step}` : `rewrote step ${step}: staging health 503 -> 200${mode === "forge" ? ", re-signed with an intruder's key" : ""}` }
 }
 
 /** The client's own copy of what it received from the afternoon run (for diff_versions). */

@@ -41,12 +41,13 @@
 
     <div class="demo" id="demo" hidden>
       <h2>Demo controls</h2>
-      <p>Play the attacker: someone with write access to the server's SQLite file rewrites yesterday's afternoon run so the failed health check reads <code>200</code>. Then ask again.</p>
+      <p>Play the attacker: someone with write access to the server's SQLite file rewrites yesterday's afternoon run so the failed health check reads <code>200</code>. Then ask again. Or play the operator in a dispute: it edits only its own copy of the evidence, then ask who is right.</p>
       <div class="row">
         <select id="tamperMode" aria-label="How to tamper">
           <option value="edit">Edit step 2 (keep the old signature)</option>
           <option value="forge">Edit step 2 and re-sign with an intruder's key</option>
           <option value="delete">Delete step 2</option>
+          <option value="evidence">Operator edits its own evidence for step 2 (chain untouched)</option>
         </select>
         <button id="tamper" type="button" class="danger">Tamper with the log</button>
         <button id="reset" type="button">Reset demo</button>
