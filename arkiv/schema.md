@@ -192,7 +192,7 @@ Raw prompts, model replies and tool results: only their hashes go on chain. The 
 Same entity, same attributes, same entry format and verifier; three fields change meaning:
 
 - `input_hash` / `output_hash`: SHA-256 of the canonical JSON of `{ "s": salt, "v": value }`, with a fresh random 32-byte salt per step, so a short value cannot be found by hashing guesses.
-- `tool` (payload and attribute): `h:` + the first 32 hex characters of SHA-256 over `{ "s": salt, "t": tool }`; empty for `run.start` and `run.end`. Queries by tool name do not work in this mode.
+- `tool` (payload and attribute): `h:` + the first 48 hex characters (192 bits) of SHA-256 over `{ "s": salt, "t": tool }`; empty for `run.start` and `run.end`. Queries by tool name do not work in this mode.
 - `note`: empty on chain.
 
 The salt, the plain tool name and the note stay in the evidence file next to the raw input and output (`raw: { input, output, salt, tool, note }`). `checkRaw(entry, raw)` in [`core.ts`](../agentlog/src/core.ts) recomputes either form: salted when `raw.salt` is present, plain otherwise.

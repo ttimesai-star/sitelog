@@ -89,10 +89,14 @@ export const hashValue = (value: unknown): Promise<Hex> => sha256(canonicalJson(
 /** Commitment to a value under a salt: SHA-256 of the canonical JSON of {s: salt, v: value}. */
 export const commitValue = (value: unknown, salt: string): Promise<Hex> => sha256(canonicalJson({ s: salt, v: value ?? null }))
 
-/** Public stand-in for a tool name: "h:" + 32 hex chars (128 bits) of SHA-256 over {s: salt, t: tool}. */
+/**
+ * Public stand-in for a tool name: "h:" + 48 hex chars (192 bits) of SHA-256 over {s: salt, t: tool}.
+ * 192 bits keep the birthday bound at 2^96, so an agent cannot find two tool names behind one
+ * commitment (review finding FIND-05, Jules 10.10); 50 characters still fit the 64-character attribute.
+ */
 export async function commitTool(tool: string, salt: string): Promise<string> {
   if (!tool) return ""
-  return `h:${(await sha256(canonicalJson({ s: salt, t: tool }))).slice(2, 34)}`
+  return `h:${(await sha256(canonicalJson({ s: salt, t: tool }))).slice(2, 50)}`
 }
 
 /** A fresh random salt, 0x + 64 hex. */

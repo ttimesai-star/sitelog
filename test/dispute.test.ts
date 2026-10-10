@@ -164,12 +164,49 @@ describe("dispute replay", () => {
   })
 })
 
+describe("review fixes (Jules, 10 Oct)", () => {
+  it("FIND-01: a tool-only raw record is not a matching step", async () => {
+    const { bundle } = await run()
+    const r = await replayDispute(bundle, { operator: { file: { entries: [{ step: 1, raw: { tool: "invoice_lookup" } }] } } })
+    const s1 = r.steps.find((s) => s.step === 1)!
+    assert.equal(s1.operator.matches, false)
+    assert.equal(s1.verdict, "neither")
+  })
+
+  it("FIND-02: a deleted step nobody mentions is still reported, as no_anchor", async () => {
+    const { bundle } = await run()
+    const cut = clone(bundle)
+    cut.entries.splice(2, 1)
+    const r = await replayDispute(cut, { operator: { file: { entries: [] } } })
+    const s2 = r.steps.find((s) => s.step === 2)!
+    assert.equal(s2.disputed, true)
+    assert.equal(s2.verdict, "no_anchor")
+  })
+
+  it("FIND-03: versions that differ only in the tool name differ", async () => {
+    const { bundle } = await run()
+    const raw = { input: [17], output: { id: 17, amount: 120, currency: "EUR" } }
+    const r = await replayDispute(bundle, { operator: { file: { entries: [{ step: 1, raw: { ...raw, tool: "invoice_lookup" } }] } }, client: { file: { entries: [{ step: 1, raw: { ...raw, tool: "other_lookup" } }] } } })
+    const s1 = r.steps.find((s) => s.step === 1)!
+    assert.equal(s1.versions_differ, true)
+    assert.equal(s1.disputed, true)
+  })
+
+  it("FIND-04: a second claim for the same step is reported, the first one counts", async () => {
+    const { bundle } = await run()
+    const f = { entries: [{ step: 1, claim: "first" }], claims: [{ step: 1, text: "second" }] }
+    const r = await replayDispute(bundle, { client: { file: f } })
+    assert.equal(r.steps.find((s) => s.step === 1)!.client.claim, "first")
+    assert.ok(r.warnings.some((w) => /more than one claim for step 1/.test(w)))
+  })
+})
+
 describe("details off chain (salted commitments)", () => {
   it("puts no note, no tool name and no guessable hash on chain", async () => {
     const { log } = await run({ detailsOffChain: true })
     for (const l of log.entries) {
       assert.equal(l.entry.note, "")
-      if (l.entry.action === "tool.call") assert.match(l.entry.tool, /^h:[0-9a-f]{32}$/)
+      if (l.entry.action === "tool.call") assert.match(l.entry.tool, /^h:[0-9a-f]{48}$/)
       // Hashing the plain value (the guess an outsider would make) does not give the on-chain hash.
       assert.notEqual(await hashValue(l.raw!.output), l.entry.output_hash)
       assert.equal(await commitValue(l.raw!.output, l.raw!.salt!), l.entry.output_hash)

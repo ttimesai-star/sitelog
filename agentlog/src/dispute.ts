@@ -120,6 +120,11 @@ function normalize(input: PartyInput | undefined, party: Party, warnings: string
   }
   if (f.agent_id && f.agent_id !== agentId) warnings.push(`${party} file names agent ${f.agent_id}, the run is of ${agentId}`)
   if (f.run_id && f.run_id !== runId) warnings.push(`${party} file names run ${f.run_id}, the run is ${runId}`)
+  // The first claim for a step counts; a second one is reported, not silently swapped in (FIND-04).
+  const addClaim = (step: number, text: string) => {
+    if (claims.has(step)) warnings.push(`${party} file: more than one claim for step ${step}, the first one is used`)
+    else claims.set(step, text.trim().slice(0, 1000))
+  }
   if (f.party && f.party !== party) warnings.push(`the file given as the ${party}'s says party "${f.party}"`)
   for (const x of f.entries ?? []) {
     const step = Number(x?.step ?? x?.entry?.step)
@@ -129,11 +134,11 @@ function normalize(input: PartyInput | undefined, party: Party, warnings: string
     }
     if (raw.has(step)) warnings.push(`${party} file: step ${step} appears twice, the first one is used`)
     else if (x.raw && typeof x.raw === "object") raw.set(step, x.raw)
-    if (typeof x.claim === "string" && x.claim.trim()) claims.set(step, x.claim.trim().slice(0, 1000))
+    if (typeof x.claim === "string" && x.claim.trim()) addClaim(step, x.claim)
   }
   for (const c of f.claims ?? []) {
     const step = Number(c?.step)
-    if (Number.isInteger(step) && step >= 0 && typeof c.text === "string" && c.text.trim()) claims.set(step, c.text.trim().slice(0, 1000))
+    if (Number.isInteger(step) && step >= 0 && typeof c.text === "string" && c.text.trim()) addClaim(step, c.text)
   }
   return { raw, claims }
 }
@@ -190,10 +195,12 @@ export async function replayDispute(bundle: ExportBundle, opts: DisputeOptions =
     entries.set(e.step, [...(entries.get(e.step) ?? []), e])
   }
   const checksByHash = new Map(chain.checks.map((c) => [String(c.entry_hash), c]))
-  const allSteps = new Set<number>([...entries.keys(), ...forced])
-  for (const p of PARTIES) for (const k of [...sides[p].raw.keys(), ...sides[p].claims.keys()]) allSteps.add(k)
   // Steps after a missing one cannot be linked; verifyRun reports them by step number in problems.
+  // Missing steps are listed too, so a deleted step shows in the report even if nobody mentions it
+  // (review finding FIND-02, Jules 10.10).
   const missing = new Set(chain.problems.map((p) => /^step (\d+) is missing/.exec(p)?.[1]).filter(Boolean).map(Number))
+  const allSteps = new Set<number>([...entries.keys(), ...forced, ...missing])
+  for (const p of PARTIES) for (const k of [...sides[p].raw.keys(), ...sides[p].claims.keys()]) allSteps.add(k)
 
   const steps: DisputeStep[] = []
   for (const s of [...allSteps].sort((a, b) => a - b)) {
@@ -218,9 +225,11 @@ export async function replayDispute(bundle: ExportBundle, opts: DisputeOptions =
     const cl = await party("client")
     const opRaw = sides.operator.raw.get(s)
     const clRaw = sides.client.raw.get(s)
-    const versionsDiffer = Boolean(opRaw && clRaw) && canonicalJson({ i: opRaw!.input ?? null, o: opRaw!.output ?? null }) !== canonicalJson({ i: clRaw!.input ?? null, o: clRaw!.output ?? null })
+    const version = (r: RawRecord) => canonicalJson({ i: r.input ?? null, o: r.output ?? null, t: r.tool ?? null })
+    const versionsDiffer = Boolean(opRaw && clRaw) && version(opRaw!) !== version(clRaw!)
     const mismatch = (x: PartyStep) => x.provided && !x.matches
-    const disputed = forced.has(s) || Boolean(op.claim || cl.claim) || versionsDiffer || mismatch(op) || mismatch(cl) || !chainOk && (op.provided || cl.provided)
+    // A step the chain does not anchor is always reported as such (FIND-02).
+    const disputed = !chainOk || forced.has(s) || Boolean(op.claim || cl.claim) || versionsDiffer || mismatch(op) || mismatch(cl)
 
     let verdict: StepVerdict
     let finding: string

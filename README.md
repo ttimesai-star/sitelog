@@ -142,7 +142,7 @@ const log = new AgentLog({ wallet, account, agentId, runId, detailsOffChain: tru
 
 - every step gets a fresh random 32-byte salt;
 - `input_hash` and `output_hash` are SHA-256 of the canonical JSON of `{ "s": salt, "v": value }`;
-- `tool` becomes `h:` + 32 hex characters of SHA-256 over `{ "s": salt, "t": tool }`;
+- `tool` becomes `h:` + 48 hex characters (192 bits) of SHA-256 over `{ "s": salt, "t": tool }`;
 - `note` is empty on chain (kept in the evidence file);
 - salts, plain tool names and notes live only in the evidence file; `checkRaw(entry, raw)` opens the commitments.
 
@@ -231,7 +231,7 @@ curl -s https://rpc.tiramisu.db-chain.testnet.arkiv.network -H 'content-type: ap
 git clone https://github.com/ttimesai-star/sitelog
 cd sitelog
 npm install
-npm test             # 60 unit tests: hashing, verification and tamper cases, writer, custody, dispute replay, strict mode, SiteLog trust rules (no network)
+npm test             # 64 unit tests: hashing, verification and tamper cases, writer, custody, dispute replay, strict mode, SiteLog trust rules (no network)
 npm run typecheck    # tsc over the TypeScript SDK, CLI and tests
 npm run dev          # web app on http://localhost:5173/sitelog/
 ```
@@ -251,4 +251,4 @@ All four are synthetic test wallets created for this demo.
 
 ## Licence
 
-MIT. Built during Arkiv: Global Tour Stop (9 to 18 October 2026) with AI coding assistants (Claude; one review by Google Jules).
+MIT. Built during Arkiv: Global Tour Stop (9 to 18 October 2026) with AI coding assistants (Claude; code reviews by Google Jules, findings applied by hand).
