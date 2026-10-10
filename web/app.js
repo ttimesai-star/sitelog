@@ -134,6 +134,7 @@ async function showView(tool, args, result) {
   }
   pendingView = { html, args, result, tool }
   $("cardWrap").hidden = false
+  $("card").style.height = ""
   // A fresh frame per answer: the view starts clean, like a new card on a device screen.
   $("card").src = `sandbox.html?v=${Date.now()}`
 }

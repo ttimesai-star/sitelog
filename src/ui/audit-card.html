@@ -117,6 +117,8 @@
     notify("ui/notifications/size-changed", { width: Math.ceil(r.width), height: Math.ceil(r.height) });
   }
 
+  document.addEventListener("toggle", sizeChanged, true);
+
   window.addEventListener("message", function (ev) {
     if (ev.source !== window.parent) return;
     var m = ev.data;
