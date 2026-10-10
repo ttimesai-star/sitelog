@@ -1,0 +1,173 @@
+{
+  "generated_at": "2026-10-10T07:45:51.245Z",
+  "formula": "score = 100 * (0.20*live + 0.30*challenge + 0.10*catalog + 0.10*speed + 0.30*delivery)",
+  "catalogue": {
+    "source": "Coinbase CDP Bazaar discovery",
+    "unique_resources": 32585,
+    "hosts": 2185,
+    "per_host_cap": 100
+  },
+  "probed": 15498,
+  "live": 15330,
+  "live_pct": 98.9,
+  "answered_402": 14952,
+  "valid_402": 14946,
+  "valid_402_pct": 96.4,
+  "malformed_402": 6,
+  "unpaid_2xx": 70,
+  "errors": 168,
+  "timeouts": 44,
+  "status_counts": [
+    [
+      "402",
+      14952
+    ],
+    [
+      "network_error",
+      168
+    ],
+    [
+      "400",
+      152
+    ],
+    [
+      "404",
+      87
+    ],
+    [
+      "200",
+      67
+    ],
+    [
+      "403",
+      23
+    ],
+    [
+      "502",
+      22
+    ],
+    [
+      "405",
+      7
+    ],
+    [
+      "500",
+      6
+    ],
+    [
+      "410",
+      3
+    ],
+    [
+      "202",
+      2
+    ],
+    [
+      "406",
+      2
+    ],
+    [
+      "422",
+      2
+    ],
+    [
+      "530",
+      2
+    ],
+    [
+      "201",
+      1
+    ],
+    [
+      "409",
+      1
+    ],
+    [
+      "503",
+      1
+    ]
+  ],
+  "payTo_mismatch_vs_catalog": 200,
+  "price_mismatch_vs_catalog": 393,
+  "testnet_offers": 733,
+  "top_issues": [
+    [
+      "accepts[i].amount \"…\" is not a positive integer",
+      194
+    ],
+    [
+      "accepts[i].scheme \"…\" is not a known x402 scheme",
+      52
+    ],
+    [
+      "402 body has no x402 fields",
+      4
+    ],
+    [
+      "accepts is missing or empty",
+      1
+    ],
+    [
+      "accepts[i].asset \"…\" is not a valid solana address",
+      1
+    ]
+  ],
+  "networks_valid": [
+    [
+      "eip155:8453",
+      14266
+    ],
+    [
+      "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      484
+    ],
+    [
+      "eip155:84532",
+      146
+    ],
+    [
+      "eip155:5042",
+      29
+    ],
+    [
+      "eip155:42220",
+      10
+    ],
+    [
+      "eip155:42161",
+      3
+    ],
+    [
+      "eip155:196",
+      3
+    ],
+    [
+      "eip155:11142220",
+      2
+    ],
+    [
+      "eip155:4663",
+      1
+    ],
+    [
+      "eip155:42793",
+      1
+    ]
+  ],
+  "price_usdc_quantiles": {
+    "n": 14415,
+    "min": 0.001,
+    "p25": 0.004,
+    "median": 0.01,
+    "p75": 0.02,
+    "max": 5000,
+    "le_0_01": 9494
+  },
+  "hosts_with_any_valid_402": 2099,
+  "purchases": 0,
+  "purchases_paid": 0,
+  "purchases_delivered": 0,
+  "latency_ms_median_402": 2292,
+  "hosts_probed": 2185,
+  "hosts_all_dead": 25
+}
