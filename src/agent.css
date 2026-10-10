@@ -25,3 +25,35 @@ ul.why li { margin: 4px 0; }
 @media (max-width: 640px) { #runSel { width: calc(100vw - 72px); } }
 table.steps { min-width: 820px; }
 table.steps td.note { min-width: 180px; }
+/* Dispute replay, details off chain, EU AI Act */
+.card h3 { font-size: 15px; margin: 14px 0 6px; }
+label.check { flex-direction: row; align-items: center; gap: 6px; font-size: 13px; color: var(--ink); }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.split > div { min-width: 0; }
+.split pre { max-height: 340px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+#ocStrictOut { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
+table.dtable { min-width: 900px; }
+table.dtable tr.quiet td { color: var(--muted); }
+table.dtable tr.disputed td { background: color-mix(in srgb, var(--warn) 7%, transparent); }
+table.dtable .claim { font-style: italic; font-size: 12px; margin-top: 4px; }
+table.dtable .excerpt { font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; max-width: 260px; }
+table.dtable td .note { max-width: 220px; overflow-wrap: anywhere; }
+.vword { font-weight: 700; white-space: nowrap; }
+.vword.ok { color: var(--ok); }
+.vword.warn { color: var(--warn); }
+.vword.bad { color: var(--bad); }
+.vword.muted { color: var(--muted); font-weight: 400; }
+table.aiact { min-width: 760px; }
+table.aiact td { width: 33%; }
+.printonly { display: none; }
+@media print {
+  body.print-dispute { background: #fff; color: #000; }
+  body.print-dispute .top, body.print-dispute footer, body.print-dispute main > section:not(#dispute), body.print-dispute #dispute > h2, body.print-dispute #dispute > p, body.print-dispute .dcontrols { display: none !important; }
+  body.print-dispute .card { border: 0; padding: 0; margin: 0; }
+  body.print-dispute .printonly { display: block; }
+  body.print-dispute .tablewrap { overflow: visible; border: 0; }
+  body.print-dispute table.dtable { min-width: 0; font-size: 10px; }
+  body.print-dispute tr { break-inside: avoid; }
+}
+.dreport code, .dreport li { overflow-wrap: anywhere; word-break: break-word; }

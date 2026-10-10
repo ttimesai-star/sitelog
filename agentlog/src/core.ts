@@ -77,7 +77,65 @@ export async function sha256(bytes: Uint8Array | string): Promise<Hex> {
 /** Hash of any JSON-like value (tool input, tool output, LLM messages). */
 export const hashValue = (value: unknown): Promise<Hex> => sha256(canonicalJson(value ?? null))
 
-const BODY_FIELDS = ["v", "agent_id", "run_id", "step", "action", "tool", "input_hash", "output_hash", "prev_entry_hash", "timestamp", "signer", "note"] as const
+// ---------- details off chain: salted commitments ----------
+//
+// A plain hash of a short value can be guessed: anyone can hash `[]`, `200` or a likely URL and
+// compare. With details kept off chain (AgentLog option `detailsOffChain`), every step gets a fresh
+// random 32-byte salt. The input and output hashes commit to {salt, value}, the tool name is replaced
+// by a commitment, and the public note is empty. The salt stays in the operator's evidence file with
+// the raw data, so whoever receives that file can check it; nobody else learns anything from the chain
+// beyond the action type, the step number, the timing and the chain links.
+
+/** Commitment to a value under a salt: SHA-256 of the canonical JSON of {s: salt, v: value}. */
+export const commitValue = (value: unknown, salt: string): Promise<Hex> => sha256(canonicalJson({ s: salt, v: value ?? null }))
+
+/** Public stand-in for a tool name: "h:" + 32 hex chars (128 bits) of SHA-256 over {s: salt, t: tool}. */
+export async function commitTool(tool: string, salt: string): Promise<string> {
+  if (!tool) return ""
+  return `h:${(await sha256(canonicalJson({ s: salt, t: tool }))).slice(2, 34)}`
+}
+
+/** A fresh random salt, 0x + 64 hex. */
+export function newSalt(): Hex {
+  const b = globalThis.crypto.getRandomValues(new Uint8Array(32))
+  return `0x${[...b].map((x) => x.toString(16).padStart(2, "0")).join("")}`
+}
+
+/** Raw data of one step, as kept off chain by the operator (or as claimed by a party in a dispute). */
+export interface RawRecord {
+  input?: unknown
+  output?: unknown
+  /** Present when the step was written with details off chain. */
+  salt?: string
+  /** Plain tool name, needed to open a tool commitment ("h:..."). */
+  tool?: string
+}
+
+/** Result of checking raw data against one on-chain entry. null = that part was not provided. */
+export interface RawCheck {
+  input: boolean | null
+  output: boolean | null
+  tool: boolean | null
+  salted: boolean
+}
+
+/**
+ * Checks raw data against the hashes of an entry. Works for both modes: with `salt` the salted
+ * commitments are recomputed, without it the plain hashes. A part that is absent is not a mismatch,
+ * it is "not provided" (null): a party in a dispute may hold only the output of a step.
+ */
+export async function checkRaw(e: Pick<EntryBody, "input_hash" | "output_hash" | "tool">, raw: RawRecord | null | undefined): Promise<RawCheck> {
+  const r = (raw && typeof raw === "object" ? raw : {}) as RawRecord
+  const salted = typeof r.salt === "string" && r.salt.length > 0
+  const h = (v: unknown) => (salted ? commitValue(v, r.salt as string) : hashValue(v))
+  const input = "input" in r ? (await h(r.input)) === e.input_hash : null
+  const output = "output" in r ? (await h(r.output)) === e.output_hash : null
+  let tool: boolean | null = null
+  if (typeof r.tool === "string") tool = String(e.tool).startsWith("h:") && salted ? (await commitTool(r.tool, r.salt as string)) === e.tool : r.tool === e.tool
+  return { input, output, tool, salted }
+}
+
+const BODY_FIELDS =["v", "agent_id", "run_id", "step", "action", "tool", "input_hash", "output_hash", "prev_entry_hash", "timestamp", "signer", "note"] as const
 
 export function bodyOf(e: EntryBody): EntryBody {
   const out: Record<string, unknown> = {}

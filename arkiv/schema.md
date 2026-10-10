@@ -186,3 +186,17 @@ The page runs these two per load, within the public RPC quota (friction F7). Cre
 ### What stays off Arkiv
 
 Raw prompts, model replies and tool results: only their hashes go on chain. The demo publishes its evidence file ([`public/demo/runs/`](../public/demo/runs/)) because its inputs are public (a GitHub API response, a public page, chain status); a real operator keeps it and shows it to an auditor. API keys never enter a hashed value: the example agent hashes the request body, not its headers.
+
+### Strict mode: details off chain (`detailsOffChain: true`)
+
+Same entity, same attributes, same entry format and verifier; three fields change meaning:
+
+- `input_hash` / `output_hash`: SHA-256 of the canonical JSON of `{ "s": salt, "v": value }`, with a fresh random 32-byte salt per step, so a short value cannot be found by hashing guesses.
+- `tool` (payload and attribute): `h:` + the first 32 hex characters of SHA-256 over `{ "s": salt, "t": tool }`; empty for `run.start` and `run.end`. Queries by tool name do not work in this mode.
+- `note`: empty on chain.
+
+The salt, the plain tool name and the note stay in the evidence file next to the raw input and output (`raw: { input, output, salt, tool, note }`). `checkRaw(entry, raw)` in [`core.ts`](../agentlog/src/core.ts) recomputes either form: salted when `raw.salt` is present, plain otherwise.
+
+### Dispute replay (no Arkiv access beyond the run)
+
+[`agentlog/src/dispute.ts`](../agentlog/src/dispute.ts) takes an export of the run (from the query above or from a file) and up to two party files (operator, client). It re-verifies the export (its `report` field is not trusted), then for every step runs `checkRaw` on each party's raw data. Verdict per disputed step: `operator`, `client`, `both`, `neither`, or `no_anchor` when the step itself fails verification. Output: `agentlog-dispute-report/v1` with the SHA-256 of each party file and a `report_hash` over the report's canonical JSON. It reads nothing from the network, so it costs no RPC quota.
